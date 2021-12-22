@@ -1,0 +1,43 @@
+{
+    "worker_hosts": "localhost",
+    "task_index": 1,
+    "job_name": "chief",
+    "num_gpus": 1,
+    "num_workers": 1,
+    "preprocess_config": {
+        "input_schema": "label:str:1,content:str:1",
+        "first_sequence": "content",
+        "second_sequence": null,
+        "sequence_length": 64,
+        "label_name": "label",
+        "label_enumerate_values": "tech,finance,entertainment,world,car,culture,sports,military,edu,game,travel,agriculture,house,story,stock",
+        "output_schema": "label,predictions"
+    },
+    "model_config": {
+        "pretrain_model_name_or_path": "./model/bert/google-bert-base-zh/bert_model.ckpt",
+        "num_labels": 15
+    },
+    "train_config": {
+        "train_input_fp": "./data/train.csv",
+        "train_batch_size": 32,
+        "num_epochs": 5,
+        "model_dir": "model_dir",
+        "optimizer_config": {
+            "learning_rate": 1e-5
+        },
+        "distribution_config": {
+            "distribution_strategy": "MirroredStrategy"
+        }
+    },
+    "evaluate_config": {
+        "eval_input_fp": "./data/dev.csv",
+        "eval_batch_size": 8,
+        "eval_checkpoint_path": "model_dir/model.ckpt-{}"
+    },
+    "predict_config": {
+        "predict_checkpoint_path": "model_dir/model.ckpt-{}",
+        "predict_input_fp": "./data/dev.csv",
+        "predict_output_fp": "./data/predict.csv",
+        "predict_batch_size": 1
+    }
+}
