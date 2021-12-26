@@ -82,7 +82,11 @@ class TextClassification(base_model):
         """
         logits, _ = output
         predictions = dict()
-        predictions["predictions"] = tf.argmax(logits, axis=-1, output_type=tf.int32)
+        index = tf.argmax(logits, axis=-1, output_type=tf.int32)
+        predictions["predict_index"] = index
+        predictions["predict_softmax"] = tf.nn.softmax(logits)
+        # 核心是理解 shape, 最后一维才是类别数量, 第一个维度是 batch_size
+        predictions["predict_prob"] = tf.gather(tf.nn.softmax(logits), index, axis=-1)
         return predictions
 
 
