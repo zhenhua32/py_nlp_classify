@@ -1,3 +1,7 @@
+"""
+使用 transformers 进行文本分类, 使用 tensorflow 模型
+"""
+
 import tensorflow as tf
 from transformers import TFAutoModelForSequenceClassification, AutoTokenizer
 
@@ -63,7 +67,7 @@ print(label_map)
 train_label = [label_map[label] for label in train_label]
 dev_label = [label_map[label] for label in dev_label]
 
-
+# 使用 tf.data.Dataset 来转换数据
 train_features = {x: train_dataset[x] for x in tokenizer.model_input_names}
 train_tf_dataset = tf.data.Dataset.from_tensor_slices((train_features, train_label))
 train_tf_dataset = train_tf_dataset.shuffle(len(train_list)).batch(8)
