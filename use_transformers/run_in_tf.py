@@ -24,7 +24,7 @@ with open("../data/train.csv", "r", encoding="utf-8") as f:
         train_list.append(line[1])
         train_label.append(line[0])
 
-train_dataset = tokenizer(train_list, padding=True, truncation=True, max_length=32, return_tensors="tf",)
+train_dataset = tokenizer(train_list, padding="max_length", truncation=True, max_length=32, return_tensors="tf",)
 
 dev_list = []
 dev_label = []
@@ -38,7 +38,7 @@ dev_dataset = tokenizer(dev_list, padding=True, truncation=True, max_length=32, 
 
 
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
+    optimizer=tf.keras.optimizers.Adam(learning_rate=5e-6),
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
     metrics=tf.metrics.SparseCategoricalAccuracy(),
 )
