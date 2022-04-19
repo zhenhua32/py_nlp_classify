@@ -36,8 +36,8 @@
     },
     "predict_config": {
         "predict_checkpoint_path": "model_dir/model.ckpt-{}",
-        "predict_input_fp": "./data/dev.csv",
+        "predict_input_fp": "./data/test.csv",
         "predict_output_fp": "./data/predict.csv",
-        "predict_batch_size": 1
+        "predict_batch_size": 10
     }
 }
