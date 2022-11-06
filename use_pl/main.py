@@ -16,9 +16,10 @@ dev_file = r"D:\code\py_nlp_classify\data\dev.csv"
 label_file = r"D:\code\py_nlp_classify\data\label.json"
 bert_path = "bert-base-chinese"
 max_length = 64
+batch_size = 64
 
 train_dataloader, dev_dataloader, label2id, id2label, tokenizer = load_dataset(
-    train_file, dev_file, label_file, bert_path, max_length
+    train_file, dev_file, label_file, bert_path, max_length, batch_size
 )
 
 # 2. 定义模型
@@ -27,6 +28,10 @@ pl_model = PlModel(model)
 
 # 3.训练器
 # 先做小批量的验证
-limit_batches = 100
-trainer = pl.Trainer(accelerator="gpu", devices=-1, max_epochs=3, limit_train_batches=limit_batches)
+limit_batches = 10
+trainer = pl.Trainer(
+    accelerator="gpu", devices=-1, max_epochs=3, limit_train_batches=limit_batches,
+    # profiler="simple",  # 用于分析训练过程中的性能瓶颈
+)
 trainer.fit(pl_model, train_dataloader, dev_dataloader)
+trainer.save_checkpoint("best_model.ckpt")
