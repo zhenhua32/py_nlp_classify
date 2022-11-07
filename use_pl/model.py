@@ -7,6 +7,15 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 
 
 def get_bert_layers(bert_path: str, load_pretrain=True) -> BertModel:
+    """
+    bert 模型的输出参考这里
+    https://huggingface.co/docs/transformers/model_doc/bert#transformers.BertModel
+    按元组的顺序来是
+    last_hidden_state: (batch_size, sequence_length, hidden_size)
+    pooler_output: (batch_size, hidden_size)
+    然后是可选的, TODO: 我对后面的输出还不了解
+    hidden_states: 是个元组, (batch_size, sequence_length, hidden_size)
+    """
     if load_pretrain:
         bert = BertModel.from_pretrained(bert_path)
     else:
@@ -29,6 +38,41 @@ class BertLinear(nn.Module):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         pooled_output = outputs[1]
         logits = self.linear(pooled_output)
+        return logits
+
+
+class BertDropout2d(nn.Module):
+    """
+    定义一个 bert + dropout2d 线性分类网络
+    """
+
+    def __init__(self, bert_path: str, num_labels: int) -> None:
+        super().__init__()
+        self.bert = get_bert_layers(bert_path)
+        self.dropout2d = nn.Dropout2d(0.5)
+        self.linear = nn.Linear(self.bert.config.hidden_size, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        sequence_output = self.dropout2d(sequence_output.permute(0, 2, 1)).permute(0, 2, 1)
+        logits = self.linear(sequence_output)
+        return logits
+
+
+class BertLSTM(nn.Module):
+    def __init__(self, bert_path: str, num_labels: int) -> None:
+        super().__init__()
+        self.lstm_hidden_size = 128
+        self.bert = get_bert_layers(bert_path)
+        self.lstm = nn.LSTM(self.bert.config.hidden_size, self.lstm_hidden_size, bidirectional=True, batch_first=True)
+        self.linear = nn.Linear(self.lstm_hidden_size * 2, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        sequence_output, _ = self.lstm(sequence_output)
+        logits = self.linear(sequence_output)
         return logits
 
 
