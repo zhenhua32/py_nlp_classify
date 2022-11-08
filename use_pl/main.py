@@ -7,9 +7,10 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from transformers import AutoTokenizer
+from pytorch_lightning.callbacks import ModelSummary
 
 from data import load_dataset
-from model import BertLinear, PlModel
+from model import BertLinear, PlModel, BertDropout2d, BertLSTM
 
 
 def main():
@@ -27,7 +28,10 @@ def main():
     )
 
     # 2. 定义模型
-    model = BertLinear(bert_path, len(label2id))
+    pl.seed_everything(32)
+    # model = BertLinear(bert_path, len(label2id))
+    # model = BertDropout2d(bert_path, len(label2id))
+    model = BertLSTM(bert_path, len(label2id))
     pl_model = PlModel(model)
 
     # 3.训练器
@@ -39,7 +43,9 @@ def main():
         precision=16,
         max_epochs=3,
         limit_train_batches=limit_batches,
+        limit_val_batches=limit_batches,
         # profiler="simple",  # 用于分析训练过程中的性能瓶颈
+        callbacks=[ModelSummary(max_depth=2)],
     )
     trainer.fit(pl_model, train_dataloader, dev_dataloader)
     trainer.save_checkpoint("best_model.ckpt")

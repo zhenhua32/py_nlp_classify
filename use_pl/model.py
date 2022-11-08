@@ -37,7 +37,9 @@ class BertLinear(nn.Module):
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         pooled_output = outputs[1]
+        # pooled_output: (batch_size, hidden_size)
         logits = self.linear(pooled_output)
+        # logits: (batch_size, num_labels)
         return logits
 
 
@@ -46,33 +48,41 @@ class BertDropout2d(nn.Module):
     定义一个 bert + dropout2d 线性分类网络
     """
 
-    def __init__(self, bert_path: str, num_labels: int) -> None:
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
         super().__init__()
+        self.max_token_len = max_token_len
+
         self.bert = get_bert_layers(bert_path)
         self.dropout2d = nn.Dropout2d(0.5)
-        self.linear = nn.Linear(self.bert.config.hidden_size, num_labels)
+        self.linear = nn.Linear(self.bert.config.hidden_size * max_token_len, num_labels)
 
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         sequence_output = outputs[0]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
+        # 这个 permute 操作不理解, 源自 https://discuss.pytorch.org/t/spatial-dropout-in-pytorch/21400/2
         sequence_output = self.dropout2d(sequence_output.permute(0, 2, 1)).permute(0, 2, 1)
-        logits = self.linear(sequence_output)
+        logits = self.linear(sequence_output.view(sequence_output.shape[0], -1))
         return logits
 
 
 class BertLSTM(nn.Module):
-    def __init__(self, bert_path: str, num_labels: int) -> None:
+    def __init__(self, bert_path: str, num_labels: int, max_token_len: int = 64, lstm_hidden_size: int = 128) -> None:
         super().__init__()
-        self.lstm_hidden_size = 128
+        self.lstm_hidden_size = lstm_hidden_size
+        self.max_token_len = max_token_len
+
         self.bert = get_bert_layers(bert_path)
         self.lstm = nn.LSTM(self.bert.config.hidden_size, self.lstm_hidden_size, bidirectional=True, batch_first=True)
-        self.linear = nn.Linear(self.lstm_hidden_size * 2, num_labels)
+        self.linear = nn.Linear(self.lstm_hidden_size * 2 * max_token_len, num_labels)
 
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         sequence_output = outputs[0]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
         sequence_output, _ = self.lstm(sequence_output)
-        logits = self.linear(sequence_output)
+        # sequence_output: (batch_size, sequence_length, lstm_hidden_size * 2)
+        logits = self.linear(sequence_output.reshape(sequence_output.shape[0], -1))
         return logits
 
 
@@ -84,13 +94,18 @@ class PlModel(pl.LightningModule):
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
         self.model = model
+        self.example_input_array = (torch.zeros((64, 64), dtype=torch.long), torch.zeros((64, 64), dtype=torch.long))
+
+    def forward(self, input_ids, attention_mask):
+        logits = self.model(input_ids, attention_mask)
+        return logits
 
     def training_step(self, batch, batch_idx):
         """
         训练模型的单个步骤
         """
         input_ids, attention_mask, labels = batch
-        logits = self.model(input_ids, attention_mask)
+        logits = self(input_ids, attention_mask)
         loss = F.cross_entropy(logits, labels)
         self.log("train_loss", loss)
         return loss
@@ -104,7 +119,7 @@ class PlModel(pl.LightningModule):
         单个验证步骤
         """
         input_ids, attention_mask, labels = batch
-        logits = self.model(input_ids, attention_mask)
+        logits = self(input_ids, attention_mask)
         loss = F.cross_entropy(logits, labels)
         self.log("val_loss", loss)
         pred = F.softmax(logits, dim=1).argmax(dim=1)
