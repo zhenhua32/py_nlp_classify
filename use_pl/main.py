@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from transformers import AutoTokenizer
 from pytorch_lightning.callbacks import ModelSummary
+from pytorch_lightning.strategies import DDPStrategy
 
 from data import load_dataset
 from model import BertLinear, PlModel, BertDropout2d, BertLSTM
@@ -37,9 +38,11 @@ def main():
     # 3.训练器
     # 先做小批量的验证
     limit_batches = 10
+    ddp = DDPStrategy(process_group_backend="gloo" if os.name == "nt" else "nccl")
     trainer = pl.Trainer(
         accelerator="auto",
         devices="auto",
+        strategy=ddp,
         precision=16,
         max_epochs=3,
         limit_train_batches=limit_batches,
