@@ -80,7 +80,7 @@ def load_dataset(train_file, dev_file, label_file, bert_path, max_length=64, bat
     train_dataset = CustomDataset(train_df, label2id, tokenizer, max_length=max_length)
     dev_dataset = CustomDataset(dev_df, label2id, tokenizer, max_length=max_length)
 
-    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=0)
-    dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=batch_size, num_workers=0)
+    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=0, pin_memory=True)
+    dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=batch_size, num_workers=0, pin_memory=True)
 
     return train_dataloader, dev_dataloader, label2id, id2label, tokenizer
