@@ -71,9 +71,6 @@ def load_dataset(train_file, dev_file, label_file, bert_path, max_length=64, bat
     """
     获取训练集和验证集, 以及返回 label2id 和 id2label, 还有 tokenizer
     """
-    train_file = r"D:\code\py_nlp_classify\data\train.csv"
-    dev_file = r"D:\code\py_nlp_classify\data\dev.csv"
-    label_file = r"D:\code\py_nlp_classify\data\label.json"
     bert_path = "bert-base-chinese"
 
     train_df = load_dataframe(train_file)
@@ -83,7 +80,7 @@ def load_dataset(train_file, dev_file, label_file, bert_path, max_length=64, bat
     train_dataset = CustomDataset(train_df, label2id, tokenizer, max_length=max_length)
     dev_dataset = CustomDataset(dev_df, label2id, tokenizer, max_length=max_length)
 
-    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=os.cpu_count())
-    dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=batch_size, num_workers=os.cpu_count())
+    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=0)
+    dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=batch_size, num_workers=0)
 
     return train_dataloader, dev_dataloader, label2id, id2label, tokenizer
