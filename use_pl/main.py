@@ -17,9 +17,9 @@ from model import BertLinear, PlModel, BertDropout2d, BertLSTM
 def main():
 
     # 1. 加载数据
-    train_file = r"D:\code\py_nlp_classify\data\train.csv"
-    dev_file = r"D:\code\py_nlp_classify\data\dev.csv"
-    label_file = r"D:\code\py_nlp_classify\data\label.json"
+    train_file = r"..\data\train.csv"
+    dev_file = r"..\data\dev.csv"
+    label_file = r"..\data\label.json"
     bert_path = "bert-base-chinese"
     max_length = 64
     batch_size = 64
@@ -37,7 +37,7 @@ def main():
 
     # 3.训练器
     # 先做小批量的验证
-    limit_batches = 10
+    limit_batches = 1.0
     ddp = DDPStrategy(process_group_backend="gloo" if os.name == "nt" else "nccl")
     trainer = pl.Trainer(
         accelerator="auto",
