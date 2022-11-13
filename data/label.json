@@ -1,0 +1,17 @@
+{
+  "agriculture": 0,
+  "house": 1,
+  "game": 2,
+  "sports": 3,
+  "entertainment": 4,
+  "story": 5,
+  "car": 6,
+  "culture": 7,
+  "finance": 8,
+  "edu": 9,
+  "military": 10,
+  "travel": 11,
+  "stock": 12,
+  "world": 13,
+  "tech": 14
+}
