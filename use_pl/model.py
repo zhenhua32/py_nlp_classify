@@ -67,6 +67,10 @@ class BertDropout2d(nn.Module):
 
 
 class BertLSTM(nn.Module):
+    """
+    定义一个 bert + 双向 lstm 的分类网络
+    """
+
     def __init__(self, bert_path: str, num_labels: int, max_token_len: int = 64, lstm_hidden_size: int = 128) -> None:
         super().__init__()
         self.lstm_hidden_size = lstm_hidden_size
@@ -83,6 +87,37 @@ class BertLSTM(nn.Module):
         sequence_output, _ = self.lstm(sequence_output)
         # sequence_output: (batch_size, sequence_length, lstm_hidden_size * 2)
         logits = self.linear(sequence_output.reshape(sequence_output.shape[0], -1))
+        return logits
+
+
+class BertCNN(nn.Module):
+    """
+    定义一个 bert + cnn 的分类网络
+    """
+
+    def __init__(self, bert_path: str, num_labels: int):
+        super().__init__()
+        self.bert = get_bert_layers(bert_path)
+        self.cnn = nn.ModuleList([
+            nn.Conv1d(self.bert.config.hidden_size, 128, k, padding="same") for k in [2, 3, 4]
+        ])
+        self.relu = nn.ReLU()
+        self.max_pool = nn.MaxPool1d(3, stride=1, padding=1)
+        self.linear = nn.Linear(128 * 64 * 3, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
+        sequence_output = sequence_output.permute(0, 2, 1)
+        # sequence_output: (batch_size, hidden_size, sequence_length)
+        cnn_list = [self.relu(conv(sequence_output)) for conv in self.cnn]
+        # cnn_list 中每个的 shape: (batch_size, 128, sequence_length)
+        pool_list = [self.max_pool(cnn) for cnn in cnn_list]
+        # pool_list 中每个的 shape: (batch_size, 128, sequence_length)
+        pool_output = torch.cat(pool_list, dim=1).flatten(start_dim=1)
+        # pool_output: (batch_size, 128 * 64)
+        logits = self.linear(pool_output)
         return logits
 
 
