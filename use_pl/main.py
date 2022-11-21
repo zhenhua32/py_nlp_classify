@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.strategies import DDPStrategy
 
 from data import load_dataset
-from model import BertLinear, PlModel, BertDropout2d, BertLSTM, BertCNN
+from model import BertLinear, PlModel, BertDropout2d, BertLSTM, BertCNN, BertLastHiddenState, BertLinearMix
 
 
 def main():
@@ -33,7 +33,9 @@ def main():
     # model = BertLinear(bert_path, len(label2id))
     # model = BertDropout2d(bert_path, len(label2id))
     # model = BertLSTM(bert_path, len(label2id))
-    model = BertCNN(bert_path, len(label2id))
+    # model = BertCNN(bert_path, len(label2id))
+    # model = BertLastHiddenState(bert_path, len(label2id))
+    model = BertLinearMix(bert_path, len(label2id))
     pl_model = PlModel(model)
 
     # 3.训练器

@@ -66,6 +66,58 @@ class BertDropout2d(nn.Module):
         return logits
 
 
+class BertLastHiddenState(nn.Module):
+    """
+    定义一个 bert 线性分类网络, 使用了 bert 的第一个输出.
+    """
+
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
+        super().__init__()
+        self.max_token_len = max_token_len
+
+        self.bert = get_bert_layers(bert_path)
+        input_size = self.bert.config.hidden_size * max_token_len
+        self.linear = nn.Linear(input_size, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
+        logits = self.linear(sequence_output.view(sequence_output.shape[0], -1))
+        return logits
+
+
+class BertLinearMix(nn.Module):
+    """
+    定义一个 bert 线性分类网络, 同时使用 bert 的前两个输出
+    """
+
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
+        super().__init__()
+        self.max_token_len = max_token_len
+
+        self.bert = get_bert_layers(bert_path)
+        input_size = self.bert.config.hidden_size * max_token_len + self.bert.config.hidden_size
+        self.linear = nn.Linear(input_size, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        pooled_output = outputs[1]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
+        # pooled_output: (batch_size, hidden_size)
+        logits = self.linear(
+            torch.cat(
+                [
+                    sequence_output.view(sequence_output.shape[0], -1),
+                    pooled_output,
+                ],
+                dim=1,
+            )
+        )
+        return logits
+
+
 class BertLSTM(nn.Module):
     """
     定义一个 bert + 双向 lstm 的分类网络
@@ -98,9 +150,7 @@ class BertCNN(nn.Module):
     def __init__(self, bert_path: str, num_labels: int):
         super().__init__()
         self.bert = get_bert_layers(bert_path)
-        self.cnn = nn.ModuleList([
-            nn.Conv1d(self.bert.config.hidden_size, 128, k, padding="same") for k in [2, 3, 4]
-        ])
+        self.cnn = nn.ModuleList([nn.Conv1d(self.bert.config.hidden_size, 128, k, padding="same") for k in [2, 3, 4]])
         self.relu = nn.ReLU()
         self.max_pool = nn.MaxPool1d(3, stride=1, padding=1)
         self.linear = nn.Linear(128 * 64 * 3, num_labels)
