@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from transformers import BertModel, AutoConfig, BertConfig
+from transformers import BertModel, AutoConfig, BertConfig, BertTokenizer
 import pytorch_lightning as pl
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
@@ -29,9 +29,9 @@ class BertLinear(nn.Module):
     定义一个 bert 线性分类网络
     """
 
-    def __init__(self, bert_path: str, num_labels: int) -> None:
+    def __init__(self, bert_path: str, num_labels: int, load_pretrain=True) -> None:
         super().__init__()
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         self.linear = nn.Linear(self.bert.config.hidden_size, num_labels)
 
     def forward(self, input_ids, attention_mask):
@@ -48,11 +48,11 @@ class BertDropout2d(nn.Module):
     定义一个 bert + dropout2d 线性分类网络
     """
 
-    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64, load_pretrain=True) -> None:
         super().__init__()
         self.max_token_len = max_token_len
 
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         self.dropout2d = nn.Dropout2d(0.5)
         self.linear = nn.Linear(self.bert.config.hidden_size * max_token_len, num_labels)
 
@@ -71,11 +71,11 @@ class BertLastHiddenState(nn.Module):
     定义一个 bert 线性分类网络, 使用了 bert 的第一个输出.
     """
 
-    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64, load_pretrain=True) -> None:
         super().__init__()
         self.max_token_len = max_token_len
 
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         input_size = self.bert.config.hidden_size * max_token_len
         self.linear = nn.Linear(input_size, num_labels)
 
@@ -92,11 +92,11 @@ class BertLinearMix(nn.Module):
     定义一个 bert 线性分类网络, 同时使用 bert 的前两个输出
     """
 
-    def __init__(self, bert_path: str, num_labels: int, max_token_len=64) -> None:
+    def __init__(self, bert_path: str, num_labels: int, max_token_len=64, load_pretrain=True) -> None:
         super().__init__()
         self.max_token_len = max_token_len
 
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         input_size = self.bert.config.hidden_size * max_token_len + self.bert.config.hidden_size
         self.linear = nn.Linear(input_size, num_labels)
 
@@ -123,12 +123,14 @@ class BertLSTM(nn.Module):
     定义一个 bert + 双向 lstm 的分类网络
     """
 
-    def __init__(self, bert_path: str, num_labels: int, max_token_len: int = 64, lstm_hidden_size: int = 128) -> None:
+    def __init__(
+        self, bert_path: str, num_labels: int, max_token_len: int = 64, lstm_hidden_size: int = 128, load_pretrain=True
+    ) -> None:
         super().__init__()
         self.lstm_hidden_size = lstm_hidden_size
         self.max_token_len = max_token_len
 
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         self.lstm = nn.LSTM(self.bert.config.hidden_size, self.lstm_hidden_size, bidirectional=True, batch_first=True)
         self.linear = nn.Linear(self.lstm_hidden_size * 2 * max_token_len, num_labels)
 
@@ -147,9 +149,9 @@ class BertCNN(nn.Module):
     定义一个 bert + cnn 的分类网络
     """
 
-    def __init__(self, bert_path: str, num_labels: int):
+    def __init__(self, bert_path: str, num_labels: int, load_pretrain=True):
         super().__init__()
-        self.bert = get_bert_layers(bert_path)
+        self.bert = get_bert_layers(bert_path, load_pretrain)
         self.cnn = nn.ModuleList([nn.Conv1d(self.bert.config.hidden_size, 128, k, padding="same") for k in [2, 3, 4]])
         self.relu = nn.ReLU()
         self.max_pool = nn.MaxPool1d(3, stride=1, padding=1)
@@ -176,9 +178,14 @@ class PlModel(pl.LightningModule):
     定义一个 pl 模型, 来整合所有的外围操作
     """
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, id2label: dict) -> None:
+        """
+        model: 实际的模型
+        id2label: id 到 label 的映射
+        """
         super().__init__()
         self.model = model
+        self.id2label = id2label
         self.example_input_array = (torch.zeros((64, 64), dtype=torch.long), torch.zeros((64, 64), dtype=torch.long))
 
     def forward(self, input_ids, attention_mask):
@@ -229,3 +236,41 @@ class PlModel(pl.LightningModule):
         self.log("val_recall", recall, prog_bar=True, sync_dist=True)
         self.log("val_f1_micro", f1_micro, prog_bar=True, sync_dist=True)
         self.log("val_f1_macro", f1_macro, prog_bar=True, sync_dist=True)
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        """
+        单个预测步骤, 这个基本是为 dataloader 服务的
+        """
+        logits = self(batch[0], batch[1])
+        probs, pred = F.softmax(logits, dim=1).max(dim=1)
+        pred_labels = [self.id2label[p] for p in pred.detach().cpu().numpy()]
+        return pred_labels, probs.detach().cpu().numpy()
+
+    def init_predict(self, model_dir: str, max_token_len=64):
+        """
+        初始化预测, 从模型目录中加载 bert 分词器
+        """
+        self.max_token_len = max_token_len
+        self.tokenizer: BertTokenizer = BertTokenizer.from_pretrained(model_dir)
+
+    def predict_raw(self, texts: list):
+        """
+        直接一步到位, 输入文本序列, 对每个文本进行预测
+        """
+        if not hasattr(self, "tokenizer") or not hasattr(self, "max_token_len"):
+            raise RuntimeError("请先调用 init_predict 方法")
+
+        inputs = self.tokenizer(
+            texts, padding="max_length", truncation=True, max_length=self.max_token_len, return_tensors="pt"
+        )
+
+        # TODO: 加上 GPU 支持
+        # TODO: predict_step 会自动调用 GPU 吗? 答案是并不会, 这些功能是 trainer 提供的
+        with torch.no_grad():
+            pred_labels, probs = self.predict_step((inputs["input_ids"], inputs["attention_mask"]), 0)
+
+        result = []
+        for text, pred_label, prob in zip(texts, pred_labels, probs):
+            result.append({"text": text, "pred_label": pred_label, "prob": prob})
+
+        return result

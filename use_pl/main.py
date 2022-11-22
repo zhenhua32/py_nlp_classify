@@ -36,7 +36,7 @@ def main():
     # model = BertCNN(bert_path, len(label2id))
     # model = BertLastHiddenState(bert_path, len(label2id))
     model = BertLinearMix(bert_path, len(label2id))
-    pl_model = PlModel(model)
+    pl_model = PlModel(model, id2label)
 
     # 3.训练器
     # 先做小批量的验证
