@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.strategies import DDPStrategy
 
 from data import load_dataset
-from model import BertLinear, PlModel, BertDropout2d, BertLSTM, BertCNN, BertLastHiddenState, BertLinearMix
+from model import BertLinear, PlModel, BertDropout2d, BertLSTM, BertCNN, BertLastHiddenState, BertLinearMix, BertCNN2D
 
 
 def main():
@@ -35,12 +35,13 @@ def main():
     # model = BertLSTM(bert_path, len(label2id))
     # model = BertCNN(bert_path, len(label2id))
     # model = BertLastHiddenState(bert_path, len(label2id))
-    model = BertLinearMix(bert_path, len(label2id))
+    # model = BertLinearMix(bert_path, len(label2id))
+    model = BertCNN2D(bert_path, len(label2id))
     pl_model = PlModel(model, id2label)
 
     # 3.训练器
     # 先做小批量的验证
-    limit_batches = 10
+    limit_batches = 1.0
     ddp = DDPStrategy(process_group_backend="gloo" if os.name == "nt" else "nccl")
     trainer = pl.Trainer(
         accelerator="auto",

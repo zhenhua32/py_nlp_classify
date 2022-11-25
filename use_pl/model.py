@@ -173,6 +173,41 @@ class BertCNN(nn.Module):
         return logits
 
 
+class BertCNN2D(nn.Module):
+    """
+    定义一个 bert + cnn 的分类网络
+    """
+
+    def __init__(self, bert_path: str, num_labels: int, load_pretrain=True):
+        super().__init__()
+        self.bert = get_bert_layers(bert_path, load_pretrain)
+        self.cnn = nn.ModuleList(
+            [
+                nn.Conv2d(1, 64, (k, self.bert.config.hidden_size), padding=0)
+                for k in [2, 3, 4]
+            ]
+        )
+        self.relu = nn.ReLU()
+        self.max_pool = nn.MaxPool2d((3, 1), stride=(1, 1), padding=(1, 0))
+        self.linear = nn.Linear(64 * (61 + 62 + 63), num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        # sequence_output: (batch_size, sequence_length, hidden_size)
+        sequence_output = sequence_output.unsqueeze(1)
+        # sequence_output: (batch_size, 1, sequence_length, hidden_size)
+        cnn_list = [self.relu(conv(sequence_output)) for conv in self.cnn]
+        # 必须使用 padding=0, 才能把最后一个维度压缩成0, 不能用 padding="same". 但是这种情况下, 第三维度会变成动态的
+        # cnn_list 中每个的 shape: (batch_size, 64, sequence_length, 1)
+        pool_list = [self.max_pool(cnn) for cnn in cnn_list]
+        # pool_list 中每个的 shape: (batch_size, 128, sequence_length, 1)
+        pool_output = torch.cat(pool_list, dim=2).flatten(start_dim=1)
+        # pool_output: (batch_size, 64 * 64)
+        logits = self.linear(pool_output)
+        return logits
+
+
 class PlModel(pl.LightningModule):
     """
     定义一个 pl 模型, 来整合所有的外围操作
@@ -186,7 +221,7 @@ class PlModel(pl.LightningModule):
         super().__init__()
         self.model = model
         self.id2label = id2label
-        self.example_input_array = (torch.zeros((64, 64), dtype=torch.long), torch.zeros((64, 64), dtype=torch.long))
+        self.example_input_array = (torch.zeros((4, 64), dtype=torch.long), torch.zeros((4, 64), dtype=torch.long))
 
     def forward(self, input_ids, attention_mask):
         logits = self.model(input_ids, attention_mask)
