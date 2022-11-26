@@ -181,11 +181,12 @@ class BERTLayerNorm(nn.Module):
 
 
 class BERTEmbeddings(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTEmbeddings, self).__init__()
         """Construct the embedding module from word, position and token_type embeddings.
         """
         hidden_size = config.hidden_size if config.emb_size < 0 else config.emb_size
+        # padding_idx 设置了, 会让这些值对梯度的贡献为 0 (不参与梯度更新)
         self.word_embeddings = nn.Embedding(
             config.vocab_size, hidden_size, padding_idx=1 if config.roberta_style else None
         )
@@ -194,38 +195,53 @@ class BERTEmbeddings(nn.Module):
         )
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, hidden_size)
         self.config = config
+        # 如果自定义而来 emb_size, 需要加一个线性层来转到 hidden_size 的大小
         self.proj = None if config.emb_size < 0 else nn.Linear(config.emb_size, config.hidden_size)
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
+        # 这个 LayerNorm 命名为大写开头的, 是为了兼容 tf checkpoint
         self.LayerNorm = BERTLayerNorm(config, special_size=hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids, token_type_ids=None, adv_embedding=None):
+    def forward(self, input_ids: torch.Tensor, token_type_ids=None, adv_embedding=None):
+        # input_ids: [batch_size, seq_len]
         seq_length = input_ids.size(1)
         if not self.config.roberta_style:
+            # 从 0 开始, 一直到 seq_length, 构建位置 id
             position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
             position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
         else:
+            # roberta_style 中是将 1 作为 padding_id 的. 这里就是找出非 1 的位置
             mask = input_ids.ne(1).int()
+            # torch.cumsum 是逐元素累加, 在 dim=1 上, 也就是 seq_len 上
+            # * mask 是为了跳过填充部分
             position_ids = (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + 1
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
 
+        # 词嵌入
         words_embeddings = self.word_embeddings(input_ids) if adv_embedding is None else adv_embedding
+        # words_embeddings: [batch_size, seq_len, hidden_size]
         if self.config.set_mask_zero:
+            # 103 是 [MASK] 的 id. 这是 AI 给我推理出来的, 牛!
             words_embeddings[input_ids == 103] = 0.0
         position_embeddings = self.position_embeddings(position_ids)
+        # position_embeddings: [batch_size, seq_len, hidden_size]
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
+        # token_type_embeddings: [batch_size, seq_len, hidden_size]
 
         if not self.config.roberta_style:
             embeddings = words_embeddings + position_embeddings + token_type_embeddings
         else:
             embeddings = words_embeddings + position_embeddings
+        # embeddings: [batch_size, seq_len, hidden_size]
+        # 用上了前面看到的 BertLayerNorm
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         if self.proj is not None:
             embeddings = self.proj(embeddings)
             embeddings = self.dropout(embeddings)
+            # 归一化到最后一个维度都是 config.hidden_size
         else:
             return embeddings, words_embeddings
 
