@@ -14,60 +14,67 @@
 # limitations under the License.
 """PyTorch BERT model."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import copy
 import json
 import math
+
+import numpy as np
 import six
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.nn import CrossEntropyLoss
-import torch.nn.functional as F
-import numpy as np
+
 
 def gelu(x):
     """Implementation of the gelu activation function.
-        For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
-        0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+    For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
+    0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+
+    真难, 我看不懂 torch.erf, 不会解这个定积分公式
     """
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
+
 class BertConfig(object):
-    """Configuration class to store the configuration of a `BertModel`.
-    """
-    def __init__(self,
-                vocab_size,
-                hidden_size=768,
-                emb_size=-1,
-                num_hidden_layers=12,
-                transformer_type='original', #support 'original', 'universal' , 'albert' and 'act'
-                transition_function='linear', #support 'linear', 'cnn', 'rnn'
-                weighted_transformer=0, #support 0 or 1
-                num_rolled_layers=3, 
-                num_attention_heads=12,
-                intermediate_size=3072,
-                hidden_act="gelu",
-                hidden_dropout_prob=0.1,
-                attention_probs_dropout_prob=0.1,
-                max_position_embeddings=512,
-                type_vocab_size=16,
-                initializer_range=0.02,
-                attention_type='self',
-                rezero=False,
-                pre_ln=False,
-                squeeze_excitation=False,
-                transfer_matrix=False,
-                dim_dropout=False,
-                roberta_style=False,
-                set_mask_zero=False,
-                init_scale=False,
-                safer_fp16=False,
-                grad_checkpoint=False,): #support 0/1
+    """Configuration class to store the configuration of a `BertModel`."""
+
+    def __init__(
+        self,
+        vocab_size,
+        hidden_size=768,
+        emb_size=-1,
+        num_hidden_layers=12,
+        transformer_type="original",  # support 'original', 'universal' , 'albert' and 'act'
+        transition_function="linear",  # support 'linear', 'cnn', 'rnn'
+        weighted_transformer=0,  # support 0 or 1
+        num_rolled_layers=3,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        hidden_act="gelu",
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        max_position_embeddings=512,
+        type_vocab_size=16,
+        initializer_range=0.02,
+        attention_type="self",
+        rezero=False,
+        pre_ln=False,
+        squeeze_excitation=False,
+        transfer_matrix=False,
+        dim_dropout=False,
+        roberta_style=False,
+        set_mask_zero=False,
+        init_scale=False,
+        safer_fp16=False,
+        grad_checkpoint=False,
+    ):  # support 0/1
         """Constructs BertConfig.
+
+        参数介绍不全, 肯定是哪里抄来的, 没有补全. 尤其是这里有个 transformer_type 参数, 支持不同的变种.
 
         Args:
             vocab_size: Vocabulary size of `inputs_ids` in `BertModel`.
@@ -113,14 +120,14 @@ class BertConfig(object):
         self.squeeze_excitation = squeeze_excitation
         self.transfer_matrix = transfer_matrix
         self.dim_dropout = dim_dropout
-        self.set_mask_zero = set_mask_zero 
+        self.set_mask_zero = set_mask_zero
         self.roberta_style = roberta_style
         self.init_scale = init_scale
         self.safer_fp16 = safer_fp16
         self.grad_checkpoint = grad_checkpoint
 
     @classmethod
-    def from_dict(cls, json_object):
+    def from_dict(cls, json_object: dict):
         """Constructs a `BertConfig` from a Python dictionary of parameters."""
         config = BertConfig(vocab_size=None)
         for (key, value) in six.iteritems(json_object):
@@ -145,9 +152,8 @@ class BertConfig(object):
 
 
 class BERTLayerNorm(nn.Module):
-    def __init__(self, config, variance_epsilon=1e-12, special_size=None):
-        """Construct a layernorm module in the TF style (epsilon inside the square root).
-        """
+    def __init__(self, config: BertConfig, variance_epsilon=1e-12, special_size=None):
+        """Construct a layernorm module in the TF style (epsilon inside the square root)."""
         super(BERTLayerNorm, self).__init__()
         self.config = config
         hidden_size = special_size if special_size is not None else config.hidden_size
@@ -155,11 +161,17 @@ class BERTLayerNorm(nn.Module):
         self.beta = nn.Parameter(torch.zeros(hidden_size))
         self.variance_epsilon = variance_epsilon if not config.roberta_style else 1e-5
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        """
+        公式可以见 torch.nn.LayerNorm
+        https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html
+        """
         previous_type = x.type()
         if self.config.safer_fp16:
             x = x.float()
+        # 在最后一个维度上求均值
         u = x.mean(-1, keepdim=True)
+        # 标准差
         s = (x - u).pow(2).mean(-1, keepdim=True)
         x = (x - u) / torch.sqrt(s + self.variance_epsilon)
         if self.config.safer_fp16:
@@ -167,17 +179,22 @@ class BERTLayerNorm(nn.Module):
         else:
             return self.gamma * x + self.beta
 
+
 class BERTEmbeddings(nn.Module):
     def __init__(self, config):
         super(BERTEmbeddings, self).__init__()
         """Construct the embedding module from word, position and token_type embeddings.
         """
         hidden_size = config.hidden_size if config.emb_size < 0 else config.emb_size
-        self.word_embeddings = nn.Embedding(config.vocab_size, hidden_size, padding_idx=1 if config.roberta_style else None)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, hidden_size, padding_idx=1 if config.roberta_style else None)
+        self.word_embeddings = nn.Embedding(
+            config.vocab_size, hidden_size, padding_idx=1 if config.roberta_style else None
+        )
+        self.position_embeddings = nn.Embedding(
+            config.max_position_embeddings, hidden_size, padding_idx=1 if config.roberta_style else None
+        )
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, hidden_size)
         self.config = config
-        self.proj = None if config.emb_size < 0 else nn.Linear(config.emb_size, config.hidden_size) 
+        self.proj = None if config.emb_size < 0 else nn.Linear(config.emb_size, config.hidden_size)
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = BERTLayerNorm(config, special_size=hidden_size)
@@ -196,7 +213,7 @@ class BERTEmbeddings(nn.Module):
 
         words_embeddings = self.word_embeddings(input_ids) if adv_embedding is None else adv_embedding
         if self.config.set_mask_zero:
-            words_embeddings[input_ids == 103] = 0.
+            words_embeddings[input_ids == 103] = 0.0
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
@@ -212,13 +229,15 @@ class BERTEmbeddings(nn.Module):
         else:
             return embeddings, words_embeddings
 
+
 class BERTFactorizedAttention(nn.Module):
     def __init__(self, config):
         super(BERTFactorizedAttention, self).__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
-                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
+                "heads (%d)" % (config.hidden_size, config.num_attention_heads)
+            )
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
@@ -245,8 +264,8 @@ class BERTFactorizedAttention(nn.Module):
 
         s_attention_scores = query_layer + attention_mask
         s_attention_probs = nn.Softmax(dim=-1)(s_attention_scores)
-        s_attention_probs = self.dropout(s_attention_probs) 
-        
+        s_attention_probs = self.dropout(s_attention_probs)
+
         c_attention_probs = nn.Softmax(dim=-1)(key_layer)
         s_context_layer = torch.matmul(s_attention_probs, value_layer)
         context_layer = torch.matmul(c_attention_probs, s_context_layer)
@@ -256,11 +275,13 @@ class BERTFactorizedAttention(nn.Module):
         context_layer = context_layer.view(*new_context_layer_shape)
         return context_layer
 
+
 def dim_dropout(x, p=0, dim=-1, training=False):
     if training == False or p == 0:
         return x
     dropout_mask = torch.bernoulli((1 - p) * (x.data.new(x.size()).zero_() + 1))
     return dropout_mask * (dropout_mask.size(dim) / torch.sum(dropout_mask, dim=dim, keepdim=True)) * x
+
 
 class BERTSelfAttention(nn.Module):
     def __init__(self, config):
@@ -268,7 +289,8 @@ class BERTSelfAttention(nn.Module):
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
-                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
+                "heads (%d)" % (config.hidden_size, config.num_attention_heads)
+            )
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
@@ -305,9 +327,9 @@ class BERTSelfAttention(nn.Module):
         if head_mask is not None and not self.training:
             for i, mask in enumerate(head_mask):
                 if head_mask[i] == 1:
-                    attention_scores[:,i,:,:] = 0. 
+                    attention_scores[:, i, :, :] = 0.0
         attention_scores = attention_scores + attention_mask
-        
+
         # Normalize the attention scores to probabilities.
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
 
@@ -316,7 +338,9 @@ class BERTSelfAttention(nn.Module):
         if not self.config.dim_dropout:
             attention_probs = self.dropout(attention_probs)
         else:
-            attention_probs = dim_dropout(attention_probs, p=self.config.attention_probs_dropout_prob, dim=-1, training=self.training)        
+            attention_probs = dim_dropout(
+                attention_probs, p=self.config.attention_probs_dropout_prob, dim=-1, training=self.training
+            )
 
         context_layer = torch.matmul(attention_probs, value_layer)
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
@@ -336,6 +360,7 @@ class BERTSelfOutput(nn.Module):
         if config.rezero:
             self.res_factor = nn.Parameter(torch.Tensor(1).fill_(0.99).to(dtype=next(self.parameters()).dtype))
             self.factor = nn.Parameter(torch.ones(1).to(dtype=next(self.parameters()).dtype))
+
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -351,12 +376,12 @@ class BERTSelfOutput(nn.Module):
 class BERTAttention(nn.Module):
     def __init__(self, config):
         super(BERTAttention, self).__init__()
-        if config.attention_type.lower() == 'self':
+        if config.attention_type.lower() == "self":
             self.self = BERTSelfAttention(config)
-        elif config.attention_type.lower() == 'factorized':
+        elif config.attention_type.lower() == "factorized":
             self.self = BERTFactorizedAttention(config)
         else:
-            raise ValueError('Attention type must in [self, factorized], but got {}'.format(config.attention_type)) 
+            raise ValueError("Attention type must in [self, factorized], but got {}".format(config.attention_type))
         self.output = BERTSelfOutput(config)
 
     def forward(self, input_tensor, attention_mask, head_mask=None):
@@ -364,17 +389,21 @@ class BERTAttention(nn.Module):
         attention_output = self.output(self_output, input_tensor)
         return attention_output
 
+
 class DepthwiseSeparableConv1d(nn.Module):
-    def __init__(self,in_channels,out_channels,kernel_size=1,stride=1,padding=0,dilation=1,bias=False):
-        super(DepthwiseSeparableConv1d,self).__init__()
-        padding = (kernel_size - 1)//2
-        self.depthwise = nn.Conv1d(in_channels,in_channels,kernel_size,stride,padding,dilation,groups=in_channels,bias=bias)
-        self.pointwise = nn.Conv1d(in_channels,out_channels,1,1,0,1,1,bias=bias)
-    
-    def forward(self,x):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, padding=0, dilation=1, bias=False):
+        super(DepthwiseSeparableConv1d, self).__init__()
+        padding = (kernel_size - 1) // 2
+        self.depthwise = nn.Conv1d(
+            in_channels, in_channels, kernel_size, stride, padding, dilation, groups=in_channels, bias=bias
+        )
+        self.pointwise = nn.Conv1d(in_channels, out_channels, 1, 1, 0, 1, 1, bias=bias)
+
+    def forward(self, x):
         x = self.depthwise(x)
         x = self.pointwise(x)
         return x
+
 
 class BERTIntermediate(nn.Module):
     def __init__(self, config):
@@ -383,49 +412,52 @@ class BERTIntermediate(nn.Module):
         if self.config.pre_ln:
             self.LayerNorm = BERTLayerNorm(config)
         self.intermediate_act_fn = gelu
-        if config.transition_function.lower() == 'linear':
+        if config.transition_function.lower() == "linear":
             self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
-        elif config.transition_function.lower() == 'cnn':
+        elif config.transition_function.lower() == "cnn":
             self.cnn = DepthwiseSeparableConv1d(config.hidden_size, 4 * config.hidden_size, kernel_size=7)
-        elif config.config.hidden_size.lower() == 'rnn':
-            raise NotImplementedError('rnn transition function is not implemented yet')
+        elif config.config.hidden_size.lower() == "rnn":
+            raise NotImplementedError("rnn transition function is not implemented yet")
         else:
-            raise ValueError('Only support linear/cnn/rnn')
+            raise ValueError("Only support linear/cnn/rnn")
+
     def forward(self, hidden_states):
         if self.config.pre_ln:
             hidden_states = self.LayerNorm(hidden_states)
-        if self.config.transition_function.lower() == 'linear':
+        if self.config.transition_function.lower() == "linear":
             hidden_states = self.dense(hidden_states)
-        elif self.config.transition_function.lower() == 'cnn': 
+        elif self.config.transition_function.lower() == "cnn":
             hidden_states = self.cnn(hidden_states.transpose(-1, -2)).transpose(-1, -2)
         else:
             pass
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
 
+
 class SqueezeExcitationBlock(nn.Module):
     def __init__(self, config):
         super(SqueezeExcitationBlock, self).__init__()
-        self.down_sampling = nn.Linear(config.hidden_size, config.hidden_size//4)
-        self.up_sampling = nn.Linear(config.hidden_size//4, config.hidden_size)
-    
+        self.down_sampling = nn.Linear(config.hidden_size, config.hidden_size // 4)
+        self.up_sampling = nn.Linear(config.hidden_size // 4, config.hidden_size)
+
     def forward(self, hidden_states):
         squeeze = torch.mean(hidden_states, 1, keepdim=True)
         excitation = torch.sigmoid(self.up_sampling(gelu(self.down_sampling(squeeze))))
         return hidden_states * excitation
 
+
 class BERTOutput(nn.Module):
     def __init__(self, config):
         super(BERTOutput, self).__init__()
         self.config = config
-        if config.transition_function.lower() == 'linear':
+        if config.transition_function.lower() == "linear":
             self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
-        elif config.transition_function.lower() == 'cnn':
+        elif config.transition_function.lower() == "cnn":
             self.cnn = DepthwiseSeparableConv1d(4 * config.hidden_size, config.hidden_size, kernel_size=7)
-        elif config.config.hidden_size.lower() == 'rnn':
-            raise NotImplementedError('rnn transition function is not implemented yet')
+        elif config.config.hidden_size.lower() == "rnn":
+            raise NotImplementedError("rnn transition function is not implemented yet")
         else:
-            raise ValueError('Only support linear/cnn/rnn')
+            raise ValueError("Only support linear/cnn/rnn")
         if not config.pre_ln and not config.rezero:
             self.LayerNorm = BERTLayerNorm(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -433,11 +465,12 @@ class BERTOutput(nn.Module):
             self.SEblock = SqueezeExcitationBlock(config)
         if config.rezero:
             self.res_factor = nn.Parameter(torch.Tensor(1).fill_(0.99).to(dtype=next(self.parameters()).dtype))
-            self.factor = nn.Parameter(torch.ones(1).to(dtype=next(self.parameters()).dtype)) 
+            self.factor = nn.Parameter(torch.ones(1).to(dtype=next(self.parameters()).dtype))
+
     def forward(self, hidden_states, input_tensor):
-        if self.config.transition_function.lower() == 'linear':
+        if self.config.transition_function.lower() == "linear":
             hidden_states = self.dense(hidden_states)
-        elif self.config.transition_function.lower() == 'cnn':
+        elif self.config.transition_function.lower() == "cnn":
             hidden_states = self.cnn(hidden_states.transpose(-1, -2)).transpose(-1, -2)
         else:
             pass
@@ -459,11 +492,13 @@ class BERTLayer(nn.Module):
         self.attention = BERTAttention(config)
         self.intermediate = BERTIntermediate(config)
         self.output = BERTOutput(config)
+
     def forward(self, hidden_states, attention_mask, head_mask=None):
         attention_output = self.attention(hidden_states, attention_mask, head_mask)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         return attention_output, layer_output
+
 
 class BERTWeightedLayer(nn.Module):
     def __init__(self, config):
@@ -471,15 +506,17 @@ class BERTWeightedLayer(nn.Module):
         self.config = config
         self.self = BERTSelfAttention(config)
         self.attention_head_size = self.self.attention_head_size
-        
-        #parameter for multi branches
-        self.w_o = nn.ModuleList([nn.Linear(self.attention_head_size, config.hidden_size) for _ in range(config.num_attention_heads)])
+
+        # parameter for multi branches
+        self.w_o = nn.ModuleList(
+            [nn.Linear(self.attention_head_size, config.hidden_size) for _ in range(config.num_attention_heads)]
+        )
         self.w_kp = torch.rand(config.num_attention_heads)
         self.w_kp = nn.Parameter(self.w_kp / self.w_kp.sum())
         self.w_a = torch.rand(config.num_attention_heads)
         self.w_a = nn.Parameter(self.w_a / self.w_a.sum())
 
-        #parameter for FFN
+        # parameter for FFN
         self.intermediate = BERTIntermediate(config)
         self.output = nn.Linear(config.intermediate_size, config.hidden_size)
         self.LayerNorm = BERTLayerNorm(config)
@@ -489,7 +526,7 @@ class BERTWeightedLayer(nn.Module):
         self_output = self.self(hidden_states, attention_mask)
         self_outputs = self_output.split(self.self.attention_head_size, dim=-1)
         self_outputs = [self.w_o[i](self_outputs[i]) for i in range(len(self_outputs))]
-        self_outputs = [self.dropout(self_outputs[i]) for i in range(len(self_outputs))] 
+        self_outputs = [self.dropout(self_outputs[i]) for i in range(len(self_outputs))]
         self_outputs = [kappa * output for kappa, output in zip(self.w_kp, self_outputs)]
         self_outputs = [self.intermediate(self_outputs[i]) for i in range(len(self_outputs))]
         self_outputs = [self.output(self_outputs[i]) for i in range(len(self_outputs))]
@@ -497,6 +534,7 @@ class BERTWeightedLayer(nn.Module):
         self_outputs = [alpha * output for alpha, output in zip(self.w_a, self_outputs)]
         output = sum(self_outputs)
         return self.LayerNorm(hidden_states + output)
+
 
 class BERTEncoder(nn.Module):
     def __init__(self, config):
@@ -509,7 +547,9 @@ class BERTEncoder(nn.Module):
                 self.layer.append(BERTLayer(config))
         if config.rezero:
             for index, layer in enumerate(self.layer):
-                layer.output.res_factor = nn.Parameter(torch.Tensor(1).fill_(1.).to(dtype=next(self.parameters()).dtype))
+                layer.output.res_factor = nn.Parameter(
+                    torch.Tensor(1).fill_(1.0).to(dtype=next(self.parameters()).dtype)
+                )
                 layer.output.factor = nn.Parameter(torch.Tensor(1).fill_(1).to(dtype=next(self.parameters()).dtype))
                 layer.attention.output.res_factor = layer.output.res_factor
                 layer.attention.output.factor = layer.output.factor
@@ -526,7 +566,9 @@ class BERTEncoder(nn.Module):
                 if not self.config.grad_checkpoint:
                     self_out, hidden_states = layer_module(hidden_states, attention_mask, None)
                 else:
-                    self_out, hidden_states = torch.utils.checkpoint.checkpoint(layer_module, hidden_states, attention_mask, None)
+                    self_out, hidden_states = torch.utils.checkpoint.checkpoint(
+                        layer_module, hidden_states, attention_mask, None
+                    )
             else:
                 self_out, hidden_states = layer_module(hidden_states, attention_mask, head_masks[index])
             if detach_index == index:
@@ -534,6 +576,7 @@ class BERTEncoder(nn.Module):
             all_encoder_layers.append(self_out)
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
+
 
 class BERTEncoderRolled(nn.Module):
     def __init__(self, config):
@@ -545,12 +588,15 @@ class BERTEncoderRolled(nn.Module):
     def forward(self, hidden_states, attention_mask, epoch_id=-1, head_masks=None):
         all_encoder_layers = [hidden_states]
         for i in range(self.config.num_hidden_layers):
-            if self.config.transformer_type.lower() == 'universal':
+            if self.config.transformer_type.lower() == "universal":
                 hidden_states = self.layer[i % self.config.num_rolled_layers](hidden_states, attention_mask)
-            elif self.config.transformer_type.lower() == 'albert':
-                hidden_states = self.layer[i // (self.config.num_hidden_layers // self.config.num_rolled_layers)](hidden_states, attention_mask)
+            elif self.config.transformer_type.lower() == "albert":
+                hidden_states = self.layer[i // (self.config.num_hidden_layers // self.config.num_rolled_layers)](
+                    hidden_states, attention_mask
+                )
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
+
 
 class BERTEncoderACT(nn.Module):
     def __init__(self, config):
@@ -560,7 +606,7 @@ class BERTEncoderACT(nn.Module):
         self.p = nn.ModuleList([copy.deepcopy(p) for _ in range(config.num_hidden_layers)])
         # Following act paper, set bias init ones
         for module in self.p:
-            module.bias.data.fill_(1.)
+            module.bias.data.fill_(1.0)
         self.config = config
         self.act_max_steps = config.num_hidden_layers
         self.threshold = 0.99
@@ -574,25 +620,26 @@ class BERTEncoderACT(nn.Module):
         halting_probability = torch.zeros(batch_size, seq_len).cuda()
         remainders = torch.zeros(batch_size, seq_len).cuda()
         n_updates = torch.zeros(batch_size, seq_len).cuda()
-        #accumulated_hidden_states = torch.zeros_like(hidden_states)
+        # accumulated_hidden_states = torch.zeros_like(hidden_states)
         for i in range(self.act_max_steps):
             p = torch.sigmoid(self.p[i](hidden_states).squeeze(2))
             still_running = halting_probability.lt(1.0).float()
             new_halted = (halting_probability + p * still_running).gt(self.threshold).float() * still_running
-            still_running = (halting_probability + p * still_running).le(self.threshold).float() * still_running 
+            still_running = (halting_probability + p * still_running).le(self.threshold).float() * still_running
             halting_probability = halting_probability + p * still_running
             remainders = remainders + new_halted * (1 - halting_probability)
             halting_probability = halting_probability + new_halted * remainders
             n_updates = n_updates + still_running + new_halted
             update_weights = (p * still_running + new_halted * remainders).unsqueeze(2)
             transformed_states = self.layer(hidden_states, attention_mask)
-            #accumulated_hidden_states = (transformed_states * update_weights) + accumulated_hidden_states
+            # accumulated_hidden_states = (transformed_states * update_weights) + accumulated_hidden_states
             hidden_states = transformed_states * update_weights + hidden_states * (1 - update_weights)
             all_encoder_layers.append(hidden_states)
             if not self.should_continue(halting_probability, n_updates):
-                #print(len(all_encoder_layers))
+                # print(len(all_encoder_layers))
                 break
-        return all_encoder_layers, torch.mean(n_updates + remainders) 
+        return all_encoder_layers, torch.mean(n_updates + remainders)
+
 
 class BERTPooler(nn.Module):
     def __init__(self, config):
@@ -626,6 +673,7 @@ class BertModel(nn.Module):
     all_encoder_layers, pooled_output = model(input_ids, token_type_ids, input_mask)
     ```
     """
+
     def __init__(self, config: BertConfig):
         """Constructor for BertModel.
 
@@ -635,22 +683,25 @@ class BertModel(nn.Module):
         super(BertModel, self).__init__()
         self.config = config
         self.embeddings = BERTEmbeddings(config)
-        if config.transformer_type.lower() == 'original':
+        if config.transformer_type.lower() == "original":
             self.encoder = BERTEncoder(config)
-        elif config.transformer_type.lower() == 'universal':
+        elif config.transformer_type.lower() == "universal":
             self.encoder = BERTEncoderRolled(config)
-        elif config.transformer_type.lower() == 'albert':
+        elif config.transformer_type.lower() == "albert":
             self.encoder = BERTEncoderRolled(config)
-        elif config.transformer_type.lower() == 'act':
+        elif config.transformer_type.lower() == "act":
             self.encoder = BERTEncoderACT(config)
-        elif config.transformer_type.lower() == 'textnas':
-            from textnas_final import op_dict, input_dict, skip_dict 
+        elif config.transformer_type.lower() == "textnas":
+            from textnas_final import input_dict, op_dict, skip_dict
+
             self.encoder = TextNASEncoder(config, op_dict, input_dict, skip_dict)
         else:
-            raise ValueError('Not support transformer type: {}'.format(config.transformer_type.lower()))
+            raise ValueError("Not support transformer type: {}".format(config.transformer_type.lower()))
         self.pooler = BERTPooler(config)
 
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, epoch_id=-1, head_masks=None, adv_embedding=None):
+    def forward(
+        self, input_ids, token_type_ids=None, attention_mask=None, epoch_id=-1, head_masks=None, adv_embedding=None
+    ):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:
@@ -668,13 +719,15 @@ class BertModel(nn.Module):
         # positions we want to attend and -10000.0 for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
-        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
-        embedding_output, word_embeddings = self.embeddings(input_ids, token_type_ids, adv_embedding) #if adv_embedding is None else (adv_embedding, None)
-        if self.config.transformer_type.lower() == 'act': 
+        embedding_output, word_embeddings = self.embeddings(
+            input_ids, token_type_ids, adv_embedding
+        )  # if adv_embedding is None else (adv_embedding, None)
+        if self.config.transformer_type.lower() == "act":
             all_encoder_layers, act_loss = self.encoder(embedding_output, extended_attention_mask)
-        elif self.config.transformer_type.lower() == 'reformer':
+        elif self.config.transformer_type.lower() == "reformer":
             sequence_output = self.encoder(embedding_output)
             all_encoder_layers = [sequence_output, sequence_output]
         else:
@@ -686,6 +739,7 @@ class BertModel(nn.Module):
         else:
             pooled_output = sequence_output[:, 0]
         return all_encoder_layers, pooled_output
+
 
 class BertForSequenceClassificationMultiTask(nn.Module):
     """BERT model for classification.
@@ -708,14 +762,15 @@ class BertForSequenceClassificationMultiTask(nn.Module):
     logits = model(input_ids, token_type_ids, input_mask)
     ```
     """
+
     def __init__(self, config, label_list, core_encoder):
         super(BertForSequenceClassificationMultiTask, self).__init__()
-        if core_encoder.lower() == 'bert':
+        if core_encoder.lower() == "bert":
             self.bert = BertModel(config)
-        elif core_encoder.lower() == 'lstm':
+        elif core_encoder.lower() == "lstm":
             self.bert = LSTMModel(config)
         else:
-            raise ValueError('Only support lstm or bert, but got {}'.format(core_encoder))
+            raise ValueError("Only support lstm or bert, but got {}".format(core_encoder))
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.ModuleList()
         for label in label_list:
@@ -732,14 +787,30 @@ class BertForSequenceClassificationMultiTask(nn.Module):
                 module.gamma.data.normal_(mean=0.0, std=config.initializer_range)
             if isinstance(module, nn.Linear):
                 module.bias.data.zero_()
+
         self.apply(init_weights)
-    def forward(self, input_ids, token_type_ids, attention_mask, labels=None, labels_index=None, epoch_id=-1, head_masks=None, adv_embedding=None, return_embedding=False, loss_weight=None):
-        all_encoder_layers, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, epoch_id, head_masks, adv_embedding)
+
+    def forward(
+        self,
+        input_ids,
+        token_type_ids,
+        attention_mask,
+        labels=None,
+        labels_index=None,
+        epoch_id=-1,
+        head_masks=None,
+        adv_embedding=None,
+        return_embedding=False,
+        loss_weight=None,
+    ):
+        all_encoder_layers, pooled_output = self.bert(
+            input_ids, token_type_ids, attention_mask, epoch_id, head_masks, adv_embedding
+        )
         pooled_output = self.dropout(pooled_output)
         logits = [classifier(pooled_output) for classifier in self.classifier]
         if labels is not None:
-            loss_fct = CrossEntropyLoss(reduction='none')
-            regression_loss_fct = nn.MSELoss(reduction='none')
+            loss_fct = CrossEntropyLoss(reduction="none")
+            regression_loss_fct = nn.MSELoss(reduction="none")
             labels_lst = torch.unbind(labels, 1)
             max_index = len(labels_lst)
             loss_lst = []
@@ -759,4 +830,3 @@ class BertForSequenceClassificationMultiTask(nn.Module):
                 return sum(loss_lst), logits, all_encoder_layers[0]
         else:
             return logits
-
