@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tokenization classes."""
+"""Tokenization classes.
+总感觉我读过这些代码, 在 ali 的 easytransfer 里.
+"""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -20,6 +22,8 @@ from __future__ import print_function
 
 import collections
 import unicodedata
+# 可以从这个表中找到 unicodedata.category(char) 的含义
+# https://www.unicode.org/reports/tr44/#GC_Values_Table
 import six
 
 
@@ -67,7 +71,11 @@ def printable_text(text):
 
 
 def load_vocab(vocab_file):
-    """Loads a vocabulary file into a dictionary."""
+    """
+    加载词汇表, 阿里的代码总是很老, python2 的兼容性还有, 用了 OrderedDict, 说明是 python3.6 之前的版本
+    返回字典, token => id 的映射
+    Loads a vocabulary file into a dictionary.
+    """
     vocab = collections.OrderedDict()
     index = 0
     with open(vocab_file, "r") as reader:
@@ -81,8 +89,11 @@ def load_vocab(vocab_file):
     return vocab
 
 
-def convert_tokens_to_ids(vocab, tokens):
-    """Converts a sequence of tokens into ids using the vocab."""
+def convert_tokens_to_ids(vocab: dict, tokens):
+    """
+    获取 tokens 的 id 列表
+    Converts a sequence of tokens into ids using the vocab.
+    """
     ids = []
     for token in tokens:
         ids.append(vocab[token])
@@ -90,7 +101,10 @@ def convert_tokens_to_ids(vocab, tokens):
 
 
 def whitespace_tokenize(text):
-    """Runs basic whitespace cleaning and splitting on a peice of text."""
+    """
+    最基础的空白分词器
+    Runs basic whitespace cleaning and splitting on a peice of text.
+    """
     text = text.strip()
     if not text:
         return []
@@ -99,16 +113,19 @@ def whitespace_tokenize(text):
 
 
 class FullTokenizer(object):
-    """Runs end-to-end tokenziation."""
+    """Runs end-to-end tokenziation.
+    一个完整的分词器, 里面包含两个子分词器, 一个是空白分词器, 一个是 wordpiece 分词器
+    """
 
     def __init__(self, vocab_file, do_lower_case=True):
         self.vocab = load_vocab(vocab_file)
-        self.inv_vocab = {v: k for k, v in self.vocab.items()}
+        self.inv_vocab = {v: k for k, v in self.vocab.items()}  # id => token
         self.basic_tokenizer = BasicTokenizer(do_lower_case=do_lower_case)
         self.wordpiece_tokenizer = WordpieceTokenizer(vocab=self.vocab)
 
     def tokenize(self, text):
         split_tokens = []
+        # 先对 text 做基础的分词, 以空白字符为分隔符. 然后对每个 token 做 wordpiece 分词
         for token in self.basic_tokenizer.tokenize(text):
             for sub_token in self.wordpiece_tokenizer.tokenize(token):
                 split_tokens.append(sub_token)
@@ -119,6 +136,7 @@ class FullTokenizer(object):
         return convert_tokens_to_ids(self.vocab, tokens)
 
     def convert_ids_to_tokens(self, ids):
+        """从 id 恢复成 token"""
         return [self.inv_vocab[i] for i in ids]
 
 
@@ -156,7 +174,9 @@ class BasicTokenizer(object):
         return output_tokens
 
     def _run_strip_accents(self, text):
-        """Strips accents from a piece of text."""
+        """Strips accents from a piece of text.
+        从 text 中移除所有的 accent, 即重音符号
+        """
         text = unicodedata.normalize("NFD", text)
         output = []
         for char in text:
@@ -167,17 +187,22 @@ class BasicTokenizer(object):
         return "".join(output)
 
     def _run_split_on_punc(self, text):
-        """Splits punctuation on a piece of text."""
+        """Splits punctuation on a piece of text.
+        切分标点符号
+        """
         chars = list(text)
         i = 0
         start_new_word = True
         output = []
         while i < len(chars):
             char = chars[i]
+            # 如果是标点符号, 就单独作为一个 token
             if _is_punctuation(char):
                 output.append([char])
                 start_new_word = True
             else:
+                # 只有当前面遇到了标点符号, 才会开启一个新的, 即设置 start_new_word=true
+                # 如果不是标点符号, 就和前面的 token 拼接起来
                 if start_new_word:
                     output.append([])
                 start_new_word = False
@@ -185,9 +210,11 @@ class BasicTokenizer(object):
             i += 1
 
         return ["".join(x) for x in output]
-    
+
     def _tokenize_chinese_chars(self, text):
-        """Adds whitespace around any CJK character."""
+        """Adds whitespace around any CJK character.
+        给中文字符左右各加一个空格
+        """
         output = []
         for char in text:
             cp = ord(char)
@@ -209,24 +236,26 @@ class BasicTokenizer(object):
         # as is Japanese Hiragana and Katakana. Those alphabets are used to write
         # space-separated words, so they are not treated specially and handled
         # like the all of the other languages.
-        if ((cp >= 0x4E00 and cp <= 0x9FFF) or  #
-            (cp >= 0x3400 and cp <= 0x4DBF) or  #
-            (cp >= 0x20000 and cp <= 0x2A6DF) or  #
-            (cp >= 0x2A700 and cp <= 0x2B73F) or  #
-            (cp >= 0x2B740 and cp <= 0x2B81F) or  #
-            (cp >= 0x2B820 and cp <= 0x2CEAF) or
-            (cp >= 0xF900 and cp <= 0xFAFF) or  #
-            (cp >= 0x2F800 and cp <= 0x2FA1F)):  #
+        if (
+            (cp >= 0x4E00 and cp <= 0x9FFF)
+            or (cp >= 0x3400 and cp <= 0x4DBF)  #
+            or (cp >= 0x20000 and cp <= 0x2A6DF)  #
+            or (cp >= 0x2A700 and cp <= 0x2B73F)  #
+            or (cp >= 0x2B740 and cp <= 0x2B81F)  #
+            or (cp >= 0x2B820 and cp <= 0x2CEAF)  #
+            or (cp >= 0xF900 and cp <= 0xFAFF)
+            or (cp >= 0x2F800 and cp <= 0x2FA1F)  #
+        ):  #
             return True
-    
+
         return False
-    
+
     def _clean_text(self, text):
         """Performs invalid character removal and whitespace cleanup on text."""
         output = []
         for char in text:
             cp = ord(char)
-            if cp == 0 or cp == 0xfffd or _is_control(char):
+            if cp == 0 or cp == 0xFFFD or _is_control(char):
                 continue
             if _is_whitespace(char):
                 output.append(" ")
@@ -238,7 +267,7 @@ class BasicTokenizer(object):
 class WordpieceTokenizer(object):
     """Runs WordPiece tokenization."""
 
-    def __init__(self, vocab, unk_token="[UNK]", max_input_chars_per_word=100):
+    def __init__(self, vocab: dict, unk_token="[UNK]", max_input_chars_per_word=100):
         self.vocab = vocab
         self.unk_token = unk_token
         self.max_input_chars_per_word = max_input_chars_per_word
@@ -246,6 +275,7 @@ class WordpieceTokenizer(object):
     def tokenize(self, text):
         """Tokenizes a piece of text into its word pieces.
 
+        这居然是个算法, 贪婪最长匹配优先
         This uses a greedy longest-match-first algorithm to perform tokenization
         using the given vocabulary.
 
@@ -260,12 +290,13 @@ class WordpieceTokenizer(object):
         Returns:
           A list of wordpiece tokens.
         """
-
+        # 还是再转一遍, 因为可能会被单独使用
         text = convert_to_unicode(text)
 
         output_tokens = []
         for token in whitespace_tokenize(text):
             chars = list(token)
+            # 超过最大长度了, 就直接放进去
             if len(chars) > self.max_input_chars_per_word:
                 output_tokens.append(self.unk_token)
                 continue
@@ -274,22 +305,30 @@ class WordpieceTokenizer(object):
             start = 0
             sub_tokens = []
             while start < len(chars):
+                # 最大长度
                 end = len(chars)
                 cur_substr = None
                 while start < end:
+                    # 获取一个子串
                     substr = "".join(chars[start:end])
+                    # 如果已经不是开头了, 就要加 ## 前缀
                     if start > 0:
                         substr = "##" + substr
+                    # 如果子串在词表中, 就可以了
                     if substr in self.vocab:
                         cur_substr = substr
                         break
+                    # 否则, 继续循环, end 往前移动, 原来这就是最长匹配的意思
                     end -= 1
+                # 如果还是没有找到子串, 就跳出, 然后当作未知词处理
                 if cur_substr is None:
                     is_bad = True
                     break
+                # 找到了, 就可以将 start 移动到 end 的位置, 开始下一轮循环
                 sub_tokens.append(cur_substr)
                 start = end
 
+            # 对应上面的 if cur_substr is None:
             if is_bad:
                 output_tokens.append(self.unk_token)
             else:
@@ -328,8 +367,7 @@ def _is_punctuation(char):
     # Characters such as "^", "$", and "`" are not in the Unicode
     # Punctuation class but we treat them as punctuation anyways, for
     # consistency.
-    if ((cp >= 33 and cp <= 47) or (cp >= 58 and cp <= 64) or
-            (cp >= 91 and cp <= 96) or (cp >= 123 and cp <= 126)):
+    if (cp >= 33 and cp <= 47) or (cp >= 58 and cp <= 64) or (cp >= 91 and cp <= 96) or (cp >= 123 and cp <= 126):
         return True
     cat = unicodedata.category(char)
     if cat.startswith("P"):
