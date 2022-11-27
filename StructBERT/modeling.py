@@ -607,6 +607,7 @@ class BERTWeightedLayer(nn.Module):
         super(BERTWeightedLayer, self).__init__()
         self.config = config
         self.self = BERTSelfAttention(config)
+        # 默认参数下 attention_head_size = 64
         self.attention_head_size = self.self.attention_head_size
 
         # parameter for multi branches
@@ -614,6 +615,7 @@ class BERTWeightedLayer(nn.Module):
             [nn.Linear(self.attention_head_size, config.hidden_size) for _ in range(config.num_attention_heads)]
         )
         self.w_kp = torch.rand(config.num_attention_heads)
+        # 要除个总和, 那么总和为 1
         self.w_kp = nn.Parameter(self.w_kp / self.w_kp.sum())
         self.w_a = torch.rand(config.num_attention_heads)
         self.w_a = nn.Parameter(self.w_a / self.w_a.sum())
@@ -624,17 +626,29 @@ class BERTWeightedLayer(nn.Module):
         self.LayerNorm = BERTLayerNorm(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, attention_mask):
-        self_output = self.self(hidden_states, attention_mask)
+    def forward(self, hidden_states: torch.Tensor, attention_mask):
+        self_output: torch.Tensor = self.self(hidden_states, attention_mask)
+        # self_output shape 是 [batch_size, seq_len, hidden_size]
+        # split 在 dim=-1 上切分, 每份是 attention_head_size
         self_outputs = self_output.split(self.self.attention_head_size, dim=-1)
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, attention_head_size]
         self_outputs = [self.w_o[i](self_outputs[i]) for i in range(len(self_outputs))]
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, hidden_size]
         self_outputs = [self.dropout(self_outputs[i]) for i in range(len(self_outputs))]
+        # 原来这是要给每个头分配权重
         self_outputs = [kappa * output for kappa, output in zip(self.w_kp, self_outputs)]
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, hidden_size]
         self_outputs = [self.intermediate(self_outputs[i]) for i in range(len(self_outputs))]
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, intermediate_size]
         self_outputs = [self.output(self_outputs[i]) for i in range(len(self_outputs))]
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, hidden_size]
         self_outputs = [self.dropout(self_outputs[i]) for i in range(len(self_outputs))]
+        # 再分配一遍权重
         self_outputs = [alpha * output for alpha, output in zip(self.w_a, self_outputs)]
+        # self_outputs 是一个 list, 每个元素的 shape 是 [batch_size, seq_len, hidden_size]
         output = sum(self_outputs)
+        # output shape 是 [seq_len, hidden_size]
+        # 有没有一种残差连接的感觉
         return self.LayerNorm(hidden_states + output)
 
 
