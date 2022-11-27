@@ -282,28 +282,39 @@ class BERTFactorizedAttention(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, attention_mask):
         # 应该是这个形状吧, 但看起来有 4 个维度
-        # hidden_states: [batch_size, 
+        # hidden_states: [batch_size, seq_len, hidden_size]
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
+        # 然后都进行线性层之后, shape 是 [batch_size, seq_len, all_head_size]
 
+        # transpose_for_scores 第一步会将 shape 转换为 [batch_size, seq_len, num_attention_heads, attention_head_size]
+        # 然后第二步就是用 [0, 2, 3, 1] 交换维度, 变成 [batch_size, num_attention_heads, attention_head_size, seq_len]
         query_layer = self.transpose_for_scores(mixed_query_layer, 0, 2, 3, 1)
+        # key_layer 和 value_layer 是 [batch_size, num_attention_heads, seq_len, attention_head_size]
         key_layer = self.transpose_for_scores(mixed_key_layer, 0, 2, 1, 3)
         value_layer = self.transpose_for_scores(mixed_value_layer, 0, 2, 1, 3)
 
         s_attention_scores = query_layer + attention_mask
         s_attention_probs = nn.Softmax(dim=-1)(s_attention_scores)
         s_attention_probs = self.dropout(s_attention_probs)
+        # s_attention_probs: [batch_size, num_attention_heads, attention_head_size, seq_len]
 
+        # c_attention_scores: [batch_size, num_attention_heads, seq_len, attention_head_size]
         c_attention_probs = nn.Softmax(dim=-1)(key_layer)
         # 矩阵乘法
         s_context_layer = torch.matmul(s_attention_probs, value_layer)
+        # s_context_layer: [batch_size, num_attention_heads, attention_head_size, attention_head_size]
         context_layer = torch.matmul(c_attention_probs, s_context_layer)
+        # context_layer: [batch_size, num_attention_heads, seq_len, attention_head_size]
 
         # contiguous 返回连续张量
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        # context_layer: [batch_size, seq_len, num_attention_heads, attention_head_size]
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        # new_context_layer_shape: [batch_size, seq_len, all_head_size]
         context_layer = context_layer.view(*new_context_layer_shape)
+        # context_layer: [batch_size, seq_len, all_head_size]
         return context_layer
 
 
@@ -321,7 +332,7 @@ def dim_dropout(x: torch.Tensor, p=0, dim=-1, training=False):
 
 
 class BERTSelfAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTSelfAttention, self).__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
@@ -332,12 +343,15 @@ class BERTSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
+        # 还是一直在疑惑, hidden_size 和 all_head_size 是一样的
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
         self.config = config
+        # 上面都和 BERTFactorizedAttention 是一样的
+        # pre_ln 是预先进行 LayerNorm 的意思
         if config.pre_ln:
             self.LayerNorm = BERTLayerNorm(config)
 
