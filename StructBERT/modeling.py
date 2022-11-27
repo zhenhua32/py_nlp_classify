@@ -361,23 +361,28 @@ class BERTSelfAttention(nn.Module):
         return x.permute(0, 2, 1, 3)
 
     def forward(self, hidden_states, attention_mask, head_mask=None):
+        # 是否预先进行 LayerNorm
         if self.config.pre_ln:
             hidden_states = self.LayerNorm(hidden_states)
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
 
+        # 原来还是有点不一样的, 原来的 shape 是 [batch_size, seq_len, num_attention_heads, attention_head_size]
+        # x.permute(0, 2, 1, 3) 后是 [batch_size, num_attention_heads, seq_len, attention_head_size]
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        # attention_scores: [batch_size, num_attention_heads, seq_len, seq_len]
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
         if head_mask is not None and not self.training:
             for i, mask in enumerate(head_mask):
                 if head_mask[i] == 1:
+                    # 这是 head 的掩码, 所以就是让某个 head 的值都变成 0
                     attention_scores[:, i, :, :] = 0.0
         attention_scores = attention_scores + attention_mask
 
@@ -394,14 +399,17 @@ class BERTSelfAttention(nn.Module):
             )
 
         context_layer = torch.matmul(attention_probs, value_layer)
+        # context_layer: [batch_size, num_attention_heads, seq_len, attention_head_size]
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        # context_layer: [batch_size, seq_len, num_attention_heads, attention_head_size]
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
+        # context_layer: [batch_size, seq_len, hidden_size]
         return context_layer
 
 
 class BERTSelfOutput(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTSelfOutput, self).__init__()
         self.config = config
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -409,16 +417,20 @@ class BERTSelfOutput(nn.Module):
             self.LayerNorm = BERTLayerNorm(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         if config.rezero:
+            # 好像就是一个 0.99, 另一个 1
             self.res_factor = nn.Parameter(torch.Tensor(1).fill_(0.99).to(dtype=next(self.parameters()).dtype))
             self.factor = nn.Parameter(torch.ones(1).to(dtype=next(self.parameters()).dtype))
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
+        # 第一种情况, 没有 pre_ln, 也没有 rezero
         if not self.config.rezero and not self.config.pre_ln:
             hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        # 第二种情况, 有 rezero
         elif self.config.rezero:
             hidden_states = hidden_states + self.factor * input_tensor
+        # 第三种情况, 有 pre_ln
         else:
             pass
         return hidden_states
