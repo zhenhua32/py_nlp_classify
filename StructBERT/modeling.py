@@ -230,6 +230,7 @@ class BERTEmbeddings(nn.Module):
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
         # token_type_embeddings: [batch_size, seq_len, hidden_size]
 
+        # embeddings 是多种的结合
         if not self.config.roberta_style:
             embeddings = words_embeddings + position_embeddings + token_type_embeddings
         else:
@@ -243,6 +244,8 @@ class BERTEmbeddings(nn.Module):
             embeddings = self.dropout(embeddings)
             # 归一化到最后一个维度都是 config.hidden_size
         else:
+            # embeddings 是 [batch_size, seq_len, hidden_size]
+            # word_embeddings 是 [batch_size, seq_len, hidden_size]
             return embeddings, words_embeddings
 
 
@@ -649,14 +652,18 @@ class BERTWeightedLayer(nn.Module):
         output = sum(self_outputs)
         # output shape 是 [seq_len, hidden_size]
         # 有没有一种残差连接的感觉
+        # 输出的 shape 是 [batch_size, seq_len, hidden_size]
         return self.LayerNorm(hidden_states + output)
 
 
 class BERTEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTEncoder, self).__init__()
         self.layer = nn.ModuleList()
         for _ in range(config.num_hidden_layers):
+            # 可选使用权重层, TODO: 但我为什么觉得这两个的输出不一样
+            # BERTLayer 返回 attention_output 和 layer_output
+            # BERTWeightedLayer 返回 layer_output
             if config.weighted_transformer:
                 self.layer.append(BERTWeightedLayer(config))
             else:
@@ -674,6 +681,8 @@ class BERTEncoder(nn.Module):
     def forward(self, hidden_states, attention_mask, epoch_id=-1, head_masks=None):
         all_encoder_layers = [hidden_states]
         if epoch_id != -1:
+            # len(self.layer) 是 12 时, epoch_id 是 [0, ..., 10] 时
+            # 结果是 [7, 3, -1, -5, -9, -13, -17, -21, -25, -29]
             detach_index = int(len(self.layer) / 3) * (2 - epoch_id) - 1
         else:
             detach_index = -1
@@ -682,6 +691,7 @@ class BERTEncoder(nn.Module):
                 if not self.config.grad_checkpoint:
                     self_out, hidden_states = layer_module(hidden_states, attention_mask, None)
                 else:
+                    # checkpoint 使用计算换取内存, 可能可以减少显存占用
                     self_out, hidden_states = torch.utils.checkpoint.checkpoint(
                         layer_module, hidden_states, attention_mask, None
                     )
@@ -695,18 +705,22 @@ class BERTEncoder(nn.Module):
 
 
 class BERTEncoderRolled(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTEncoderRolled, self).__init__()
         layer = BERTLayer(config)
         self.config = config
+        # num_rolled_layers 默认是 3
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_rolled_layers)])
 
     def forward(self, hidden_states, attention_mask, epoch_id=-1, head_masks=None):
         all_encoder_layers = [hidden_states]
         for i in range(self.config.num_hidden_layers):
             if self.config.transformer_type.lower() == "universal":
+                # % 是取余数, 所以是循环使用 self.layer, 每个用 num_hidden_layers / num_rolled_layers 次
+                # 是 [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]
                 hidden_states = self.layer[i % self.config.num_rolled_layers](hidden_states, attention_mask)
             elif self.config.transformer_type.lower() == "albert":
+                # 前面那个是循环的, 这个是顺序的. 也就是 [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
                 hidden_states = self.layer[i // (self.config.num_hidden_layers // self.config.num_rolled_layers)](
                     hidden_states, attention_mask
                 )
@@ -715,7 +729,7 @@ class BERTEncoderRolled(nn.Module):
 
 
 class BERTEncoderACT(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTEncoderACT, self).__init__()
         self.layer = BERTLayer(config)
         p = nn.Linear(config.hidden_size, 1)
@@ -728,20 +742,28 @@ class BERTEncoderACT(nn.Module):
         self.threshold = 0.99
 
     def should_continue(self, halting_probability, n_updates):
+        # halting_probability 是停止概率, n_updates 是已经更新的次数
         return (halting_probability.lt(self.threshold).__and__(n_updates.lt(self.act_max_steps))).any()
 
     def forward(self, hidden_states, attention_mask):
         all_encoder_layers = [hidden_states]
         batch_size, seq_len, hdim = hidden_states.size()
+        # 一开始 halting_probability 是 0
         halting_probability = torch.zeros(batch_size, seq_len).cuda()
+        # remainders 是余数的意思
         remainders = torch.zeros(batch_size, seq_len).cuda()
         n_updates = torch.zeros(batch_size, seq_len).cuda()
         # accumulated_hidden_states = torch.zeros_like(hidden_states)
         for i in range(self.act_max_steps):
+            # TODO: 放弃了, 不看了
             p = torch.sigmoid(self.p[i](hidden_states).squeeze(2))
+            # p shape 是 [batch_size, seq_len]
             still_running = halting_probability.lt(1.0).float()
+            # still_running shape 是 [batch_size, seq_len]
             new_halted = (halting_probability + p * still_running).gt(self.threshold).float() * still_running
+            # new_halted shape 是 [batch_size, seq_len]
             still_running = (halting_probability + p * still_running).le(self.threshold).float() * still_running
+            # still_running shape 是 [batch_size, seq_len]
             halting_probability = halting_probability + p * still_running
             remainders = remainders + new_halted * (1 - halting_probability)
             halting_probability = halting_probability + new_halted * remainders
@@ -758,7 +780,7 @@ class BERTEncoderACT(nn.Module):
 
 
 class BERTPooler(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTPooler, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
@@ -766,9 +788,13 @@ class BERTPooler(nn.Module):
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
+        # 只取第一个 token
+        # hidden_states: [batch_size, seq_len, hidden_size]
         first_token_tensor = hidden_states[:, 0]
+        # first_token_tensor: [batch_size, hidden_size]
         pooled_output = self.dense(first_token_tensor)
         pooled_output = self.activation(pooled_output)
+        # 输出形状 pooled_output: [batch_size, hidden_size]
         return pooled_output
 
 
@@ -808,6 +834,7 @@ class BertModel(nn.Module):
         elif config.transformer_type.lower() == "act":
             self.encoder = BERTEncoderACT(config)
         elif config.transformer_type.lower() == "textnas":
+            # TODO: 不知道这个代码在哪里
             from textnas_final import input_dict, op_dict, skip_dict
 
             self.encoder = TextNASEncoder(config, op_dict, input_dict, skip_dict)
@@ -818,6 +845,13 @@ class BertModel(nn.Module):
     def forward(
         self, input_ids, token_type_ids=None, attention_mask=None, epoch_id=-1, head_masks=None, adv_embedding=None
     ):
+        """
+        input_ids: [batch_size, seq_len]
+        token_type_ids: [batch_size, seq_len]
+        attention_mask: [batch_size, seq_len]
+        head_masks: [num_layers, num_heads]
+        adv_embedding: [batch_size, seq_len, hidden_size]
+        """
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:
@@ -829,13 +863,16 @@ class BertModel(nn.Module):
         # this attention mask is more simple than the triangular masking of causal attention
         # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        # extended_attention_mask: [batch_size, 1, 1, seq_len]
 
         # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
         # masked positions, this operation will create a tensor which is 0.0 for
         # positions we want to attend and -10000.0 for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
+        # 原来 to(dtype=next(self.parameters()).dtype) 操作是为了兼容 fp16
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
+        # 对于非掩码的位置, 直接乘上 -10000, 使得 softmax 之后为 0
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
         embedding_output, word_embeddings = self.embeddings(
@@ -843,17 +880,24 @@ class BertModel(nn.Module):
         )  # if adv_embedding is None else (adv_embedding, None)
         if self.config.transformer_type.lower() == "act":
             all_encoder_layers, act_loss = self.encoder(embedding_output, extended_attention_mask)
+        # 这哪里抄来的吧, transformer_type 都没有看到过 reformer, 前面就定义了五种
         elif self.config.transformer_type.lower() == "reformer":
             sequence_output = self.encoder(embedding_output)
             all_encoder_layers = [sequence_output, sequence_output]
         else:
             all_encoder_layers = self.encoder(embedding_output, extended_attention_mask, epoch_id, head_masks)
+        # 将 word_embeddings 放在最前面, 多加一个
         all_encoder_layers.insert(0, word_embeddings)
         sequence_output = all_encoder_layers[-1]
         if not self.config.safer_fp16:
             pooled_output = self.pooler(sequence_output)
         else:
+            # 如果 safer_fp16 为 True, 就不用了, 直接取第一个 token
+            # 为啥啊?
             pooled_output = sequence_output[:, 0]
+        # pooled_output: [batch_size, hidden_size]
+        # all_encoder_layers 中第一个是 word_embeddings, shape 是 [batch_size, seq_len, hidden_size]
+        # 另外的是每层的输出, shape 是 [batch_size, seq_len, hidden_size]
         return all_encoder_layers, pooled_output
 
 
@@ -879,20 +923,24 @@ class BertForSequenceClassificationMultiTask(nn.Module):
     ```
     """
 
-    def __init__(self, config, label_list, core_encoder):
+    def __init__(self, config: BertConfig, label_list: list, core_encoder: str):
         super(BertForSequenceClassificationMultiTask, self).__init__()
         if core_encoder.lower() == "bert":
             self.bert = BertModel(config)
         elif core_encoder.lower() == "lstm":
+            # 代码又缺失
             self.bert = LSTMModel(config)
         else:
             raise ValueError("Only support lstm or bert, but got {}".format(core_encoder))
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.ModuleList()
+        # 这个 label_list 应该是为了分层标签的
         for label in label_list:
+            # 有多个线性层
             self.classifier.append(nn.Linear(config.hidden_size, len(label)))
         self.label_list = label_list
 
+        # 初始化权重
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
                 # Slightly different from the TF version which uses truncated_normal for initialization
@@ -901,6 +949,7 @@ class BertForSequenceClassificationMultiTask(nn.Module):
             elif isinstance(module, BERTLayerNorm):
                 module.beta.data.normal_(mean=0.0, std=config.initializer_range)
                 module.gamma.data.normal_(mean=0.0, std=config.initializer_range)
+            # 如果是线性层, 还要将 bias 初始化为 0
             if isinstance(module, nn.Linear):
                 module.bias.data.zero_()
 
@@ -923,19 +972,36 @@ class BertForSequenceClassificationMultiTask(nn.Module):
             input_ids, token_type_ids, attention_mask, epoch_id, head_masks, adv_embedding
         )
         pooled_output = self.dropout(pooled_output)
+        # pooled_output: [batch_size, hidden_size]
         logits = [classifier(pooled_output) for classifier in self.classifier]
+        # logits 中每个元素的 shape: [batch_size, num_labels], num_labels 可能不同
         if labels is not None:
+            # 交叉熵
             loss_fct = CrossEntropyLoss(reduction="none")
+            # 均方差
             regression_loss_fct = nn.MSELoss(reduction="none")
+            # 移除 dim=1 这个维度, 返回数组. 原本 labels 是 [batch_size, N], N 是层级数
+            # 现在变成了 [batch_size]. labels_lst 的长度是 N, 里面就是每一层标签
             labels_lst = torch.unbind(labels, 1)
             max_index = len(labels_lst)
             loss_lst = []
             for index, (label, logit) in enumerate(zip(labels_lst, logits)):
+                # index 是第几层, label 是第 index 层的标签, logit 是第 index 层的预测值
+                # label 是当前层级的标签, shape 是 [batch_size]
+                # logit 是当前层级的输出, shape 是 [batch_size, num_labels]
+                # 如果标签的数量大于 1, 就是多标签分类
                 if len(self.label_list[index]) != 1:
                     loss = loss_fct(logit, label.long())
+                    # loss: [batch_size]
+                # 否则就是回归
                 else:
+                    # squeeze 压缩掉最后一个维度, 因为有可能是 (N, 1)
                     loss = regression_loss_fct(logit.squeeze(-1), label)
+                # 标签也有掩码. 那感觉 labels_index 不能不填啊, 默认值 None 是不行的
+                # 而且 labels_index 的最后一个维度是 batch_size
+                # TODO: 不知道应该用什么值
                 labels_mask = (labels_index == index).to(dtype=next(self.parameters()).dtype)
+                # 标签还有权重, 不同的层级权重不同
                 if loss_weight is not None:
                     loss = loss * loss_weight[index]
                 loss = torch.mean(loss * labels_mask)
@@ -945,4 +1011,5 @@ class BertForSequenceClassificationMultiTask(nn.Module):
             else:
                 return sum(loss_lst), logits, all_encoder_layers[0]
         else:
+            # 没标签就直接返回了
             return logits
