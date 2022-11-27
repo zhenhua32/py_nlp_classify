@@ -247,7 +247,10 @@ class BERTEmbeddings(nn.Module):
 
 
 class BERTFactorizedAttention(nn.Module):
-    def __init__(self, config):
+    """
+    Factorized 是因式分解
+    """
+    def __init__(self, config: BertConfig):
         super(BERTFactorizedAttention, self).__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
@@ -255,21 +258,31 @@ class BERTFactorizedAttention(nn.Module):
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads)
             )
         self.num_attention_heads = config.num_attention_heads
+        # 默认情况下 attention_head_size 是 64 = 768 / 12
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        # 我还是没看懂, all_head_size 有可能不等于 hidden_size 吗?
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
+        # query 是从 hidden_size => all_head_size
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-    def transpose_for_scores(self, x, *size):
+    def transpose_for_scores(self, x: torch.Tensor, *size):
+        """
+        转置
+        """
+        # 放弃最后一个维度, 加上两个新维度
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(*new_x_shape)
+        # 交换维度, 比如从 (2, 3, 5) 变换成 (5, 2, 3)
         return x.permute(size)
 
-    def forward(self, hidden_states, attention_mask):
+    def forward(self, hidden_states: torch.Tensor, attention_mask):
+        # 应该是这个形状吧, 但看起来有 4 个维度
+        # hidden_states: [batch_size, 
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
@@ -283,19 +296,27 @@ class BERTFactorizedAttention(nn.Module):
         s_attention_probs = self.dropout(s_attention_probs)
 
         c_attention_probs = nn.Softmax(dim=-1)(key_layer)
+        # 矩阵乘法
         s_context_layer = torch.matmul(s_attention_probs, value_layer)
         context_layer = torch.matmul(c_attention_probs, s_context_layer)
 
+        # contiguous 返回连续张量
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
         return context_layer
 
 
-def dim_dropout(x, p=0, dim=-1, training=False):
-    if training == False or p == 0:
+def dim_dropout(x: torch.Tensor, p=0, dim=-1, training=False):
+    if training is False or p == 0:
         return x
+    # 伯努利分布
+    # 后面的 (x.data.new(x.size()).zero_() + 1) 操作可以简化为 x.data.new_ones(x.size()), 就是生成 x 形状的值为 1 的张量
+    # 然后乘以 (1 - p) 就是存留的概率, p 是 dropout 的概率
+    # dropout_mask 是一个二值张量, 0 表示丢弃, 1 表示存留
     dropout_mask = torch.bernoulli((1 - p) * (x.data.new(x.size()).zero_() + 1))
+    # dim 是选择的维度, 然后除以这个维度上的总和
+    # 这会相应的放大剩下的值, 使得总和不变
     return dropout_mask * (dropout_mask.size(dim) / torch.sum(dropout_mask, dim=dim, keepdim=True)) * x
 
 
