@@ -498,6 +498,7 @@ class BERTIntermediate(nn.Module):
         elif config.transition_function.lower() == "cnn":
             self.cnn = DepthwiseSeparableConv1d(config.hidden_size, 4 * config.hidden_size, kernel_size=7)
             # cnn shape: [batch_size, 4 * hidden_size, hidden_size]
+        # 总感觉这代码不太对, 为什么是 config.config
         elif config.config.hidden_size.lower() == "rnn":
             raise NotImplementedError("rnn transition function is not implemented yet")
         else:
@@ -512,32 +513,40 @@ class BERTIntermediate(nn.Module):
         elif self.config.transition_function.lower() == "cnn":
             # fuck 我前面算了一遍, 没想到这里调换了维度
             hidden_states = self.cnn(hidden_states.transpose(-1, -2)).transpose(-1, -2)
-            # 然后输出的 shape 是 [batch_size, seq_len, hidden_size * 4], 最后一个维度就是默认参数中的 3072
+            # 然后输出的 shape 是 [batch_size, seq_len, hidden_size * 4], 最后一个维度就是默认参数中的 3072, 就是 intermediate_size
         else:
             pass
         hidden_states = self.intermediate_act_fn(hidden_states)
+        # 输出的 shape 是 [batch_size, seq_len, intermediate_size]
         return hidden_states
 
 
 class SqueezeExcitationBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(SqueezeExcitationBlock, self).__init__()
+        # 下采样, 降低维度到 1/4
         self.down_sampling = nn.Linear(config.hidden_size, config.hidden_size // 4)
+        # 上采样, 恢复维度
         self.up_sampling = nn.Linear(config.hidden_size // 4, config.hidden_size)
 
     def forward(self, hidden_states):
+        # 先在第二个维度上求均值, shape 是 [batch_size, 1, hidden_size]
         squeeze = torch.mean(hidden_states, 1, keepdim=True)
         excitation = torch.sigmoid(self.up_sampling(gelu(self.down_sampling(squeeze))))
+        # excitation shape 是 [batch_size, 1, hidden_size]
+        # 这个是对应元素相乘, 因为 excitation 的第二个维度是 1, 还会广播 hidden_states 的第二个维度
+        # 输出的 shape 是 [batch_size, seq_len, hidden_size]
         return hidden_states * excitation
 
 
 class BERTOutput(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTOutput, self).__init__()
         self.config = config
         if config.transition_function.lower() == "linear":
             self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         elif config.transition_function.lower() == "cnn":
+            # 结构和上面的 BERTIntermediate, 除了这里调换了下顺序, in_channels 是 4 * hidden_size,  out_channels = hidden_size
             self.cnn = DepthwiseSeparableConv1d(4 * config.hidden_size, config.hidden_size, kernel_size=7)
         elif config.config.hidden_size.lower() == "rnn":
             raise NotImplementedError("rnn transition function is not implemented yet")
@@ -549,6 +558,7 @@ class BERTOutput(nn.Module):
         if config.squeeze_excitation:
             self.SEblock = SqueezeExcitationBlock(config)
         if config.rezero:
+            # 我就没看到 self.res_factor 在哪里被使用过
             self.res_factor = nn.Parameter(torch.Tensor(1).fill_(0.99).to(dtype=next(self.parameters()).dtype))
             self.factor = nn.Parameter(torch.ones(1).to(dtype=next(self.parameters()).dtype))
 
@@ -568,11 +578,15 @@ class BERTOutput(nn.Module):
             hidden_states = hidden_states + self.factor * input_tensor
         else:
             pass
+        # 输出 shape 是 [batch_size, seq_len, hidden_size]
         return hidden_states
 
 
 class BERTLayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
+        """
+        终于到这里了, 一个 bert layer 由三个子模块组成
+        """
         super(BERTLayer, self).__init__()
         self.attention = BERTAttention(config)
         self.intermediate = BERTIntermediate(config)
@@ -580,13 +594,16 @@ class BERTLayer(nn.Module):
 
     def forward(self, hidden_states, attention_mask, head_mask=None):
         attention_output = self.attention(hidden_states, attention_mask, head_mask)
+        # attention_output shape 是 [batch_size, seq_len, hidden_size]
         intermediate_output = self.intermediate(attention_output)
+        # intermediate_output shape 是 [batch_size, seq_len, intermediate_size]
         layer_output = self.output(intermediate_output, attention_output)
+        # layer_output shape 是 [batch_size, seq_len, hidden_size]
         return attention_output, layer_output
 
 
 class BERTWeightedLayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTWeightedLayer, self).__init__()
         self.config = config
         self.self = BERTSelfAttention(config)
