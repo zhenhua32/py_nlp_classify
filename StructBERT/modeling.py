@@ -433,11 +433,15 @@ class BERTSelfOutput(nn.Module):
         # 第三种情况, 有 pre_ln
         else:
             pass
+        # 输出的 shape 是 [batch_size, seq_len, hidden_size]
         return hidden_states
 
 
 class BERTAttention(nn.Module):
-    def __init__(self, config):
+    """
+    使用两种可选的注意力机制, 然后加上一个 BERTSelfOutput
+    """
+    def __init__(self, config: BertConfig):
         super(BERTAttention, self).__init__()
         if config.attention_type.lower() == "self":
             self.self = BERTSelfAttention(config)
@@ -450,26 +454,40 @@ class BERTAttention(nn.Module):
     def forward(self, input_tensor, attention_mask, head_mask=None):
         self_output = self.self(input_tensor, attention_mask, head_mask)
         attention_output = self.output(self_output, input_tensor)
+        # 输出的 shape 是 [batch_size, seq_len, hidden_size]
         return attention_output
 
 
 class DepthwiseSeparableConv1d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, padding=0, dilation=1, bias=False):
         super(DepthwiseSeparableConv1d, self).__init__()
+        # 这里重置了 padding, 所以这个参数没用了
         padding = (kernel_size - 1) // 2
         self.depthwise = nn.Conv1d(
             in_channels, in_channels, kernel_size, stride, padding, dilation, groups=in_channels, bias=bias
         )
+        # (Lin + 2 * padding - dialation * (kernel_size - 1) - 1 ) / stride + 1
         self.pointwise = nn.Conv1d(in_channels, out_channels, 1, 1, 0, 1, 1, bias=bias)
+        # kernel_size = 1, stride = 1, padding = 0, dilation = 1, groups = 1
+        # (Lin + 2 * 0 - 1 * (1 - 1) - 1 ) / 1 + 1
+        # (Lin - 1) / 1 + 1 即 Lin
 
     def forward(self, x):
+        # 注意看下面的例子, hidden_states.transpose(-1, -2), 所以
+        # x shape 是 [batch_size, hidden_size, seq_len]
         x = self.depthwise(x)
+        # 看下面的使用中, kernel_size = 7, 其他参数都是默认的. in_channels = hidden_size, out_channels = 4 * hidden_size
+        # (Lin + 2 * 3 - 1 * (7 - 1) - 1 ) / 1 + 1
+        # 即 Lin. 然后 Lin 就是 seq_len.
+        # shape 是 [batch_size, hidden_size, seq_len]
         x = self.pointwise(x)
+        # shape 是 [batch_size, out_channels, seq_len]
+        # 实例中是 [batch_size, 4 * hidden_size, seq_len]
         return x
 
 
 class BERTIntermediate(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: BertConfig):
         super(BERTIntermediate, self).__init__()
         self.config = config
         if self.config.pre_ln:
@@ -479,6 +497,7 @@ class BERTIntermediate(nn.Module):
             self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         elif config.transition_function.lower() == "cnn":
             self.cnn = DepthwiseSeparableConv1d(config.hidden_size, 4 * config.hidden_size, kernel_size=7)
+            # cnn shape: [batch_size, 4 * hidden_size, hidden_size]
         elif config.config.hidden_size.lower() == "rnn":
             raise NotImplementedError("rnn transition function is not implemented yet")
         else:
@@ -489,8 +508,11 @@ class BERTIntermediate(nn.Module):
             hidden_states = self.LayerNorm(hidden_states)
         if self.config.transition_function.lower() == "linear":
             hidden_states = self.dense(hidden_states)
+            # shape 是 [batch_size, seq_len, intermediate_size]
         elif self.config.transition_function.lower() == "cnn":
+            # fuck 我前面算了一遍, 没想到这里调换了维度
             hidden_states = self.cnn(hidden_states.transpose(-1, -2)).transpose(-1, -2)
+            # 然后输出的 shape 是 [batch_size, seq_len, hidden_size * 4], 最后一个维度就是默认参数中的 3072
         else:
             pass
         hidden_states = self.intermediate_act_fn(hidden_states)
