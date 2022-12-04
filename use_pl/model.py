@@ -353,7 +353,6 @@ class PlModel(pl.LightningModule):
         self.tokenizer: BertTokenizer = BertTokenizer.from_pretrained(model_dir)
         self.eval()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("cpu")
         # TODO: 没法用 self.device = device 保存参数
         self.to(device)
 
@@ -365,7 +364,6 @@ class PlModel(pl.LightningModule):
             raise RuntimeError("请先调用 init_predict 方法")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("cpu")
         inputs = self.tokenizer(
             texts, padding="max_length", truncation=True, max_length=self.max_token_len, return_tensors="pt"
         )
