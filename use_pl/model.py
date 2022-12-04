@@ -1,3 +1,5 @@
+from abc import ABC, abstractmethod
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -22,6 +24,15 @@ def get_bert_layers(bert_path: str, load_pretrain=True) -> BertModel:
         bert_config = BertConfig.from_pretrained(bert_path)
         bert = BertModel(bert_config)
     return bert
+
+
+class AbstractModel(ABC, nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, input_ids, attention_mask):
+        raise ImportError("子类必须实现 forward 方法")
 
 
 class BertLinear(nn.Module):
@@ -340,6 +351,11 @@ class PlModel(pl.LightningModule):
         """
         self.max_token_len = max_token_len
         self.tokenizer: BertTokenizer = BertTokenizer.from_pretrained(model_dir)
+        self.eval()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
+        # TODO: 没法用 self.device = device 保存参数
+        self.to(device)
 
     def predict_raw(self, texts: list):
         """
@@ -348,14 +364,18 @@ class PlModel(pl.LightningModule):
         if not hasattr(self, "tokenizer") or not hasattr(self, "max_token_len"):
             raise RuntimeError("请先调用 init_predict 方法")
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         inputs = self.tokenizer(
             texts, padding="max_length", truncation=True, max_length=self.max_token_len, return_tensors="pt"
         )
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"].to(device)
 
-        # TODO: 加上 GPU 支持
-        # TODO: predict_step 会自动调用 GPU 吗? 答案是并不会, 这些功能是 trainer 提供的
+        # 加上 GPU 支持
+        # predict_step 会自动调用 GPU 吗? 答案是并不会, 这些功能是 trainer 提供的
         with torch.no_grad():
-            pred_labels, probs = self.predict_step((inputs["input_ids"], inputs["attention_mask"]), 0)
+            pred_labels, probs = self.predict_step((input_ids, attention_mask), 0)
 
         result = []
         for text, pred_label, prob in zip(texts, pred_labels, probs):
