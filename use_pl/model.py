@@ -16,7 +16,7 @@ def get_bert_layers(bert_path: str, load_pretrain=True) -> BertModel:
     last_hidden_state: (batch_size, sequence_length, hidden_size)
     pooler_output: (batch_size, hidden_size)
     然后是可选的, TODO: 我对后面的输出还不了解
-    hidden_states: 是个元组, (batch_size, sequence_length, hidden_size)
+    hidden_states: 是个元组, 是每一层的输出, (batch_size, sequence_length, hidden_size)
     """
     if load_pretrain:
         bert = BertModel.from_pretrained(bert_path)
@@ -298,7 +298,7 @@ class PlModel(pl.LightningModule):
         input_ids, attention_mask, labels = batch
         logits = self(input_ids, attention_mask)
         loss = F.cross_entropy(logits, labels)
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
@@ -312,7 +312,7 @@ class PlModel(pl.LightningModule):
         input_ids, attention_mask, labels = batch
         logits = self(input_ids, attention_mask)
         loss = F.cross_entropy(logits, labels)
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, sync_dist=True)
         pred = F.softmax(logits, dim=1).argmax(dim=1)
         return pred, labels
 

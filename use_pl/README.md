@@ -6,6 +6,8 @@ https://pytorch-lightning.readthedocs.io/en/latest/starter/introduction.html
 
 数据集暂时还是用 data 目录下的那个新闻分类, 共 15 个类别.
 
+https://www.cluebenchmarks.com/introduce.html
+
 # 技巧
 
 https://neptune.ai/blog/text-classification-tips-and-tricks-kaggle-competitions

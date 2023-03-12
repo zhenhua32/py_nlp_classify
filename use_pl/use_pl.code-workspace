@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../clue_data"
+		},
+		{
+			"path": "../data"
+		}
+	],
+	"settings": {}
+}

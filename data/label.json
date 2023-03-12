@@ -1,17 +1,77 @@
 {
-  "agriculture": 0,
-  "car": 1,
-  "culture": 2,
-  "edu": 3,
-  "entertainment": 4,
-  "finance": 5,
-  "game": 6,
-  "house": 7,
-  "military": 8,
-  "sports": 9,
-  "stock": 10,
-  "story": 11,
-  "tech": 12,
-  "travel": 13,
-  "world": 14
+  "news_story": {
+    "label": "100",
+    "label_desc": "news_story",
+    "label_id": 0
+  },
+  "news_culture": {
+    "label": "101",
+    "label_desc": "news_culture",
+    "label_id": 1
+  },
+  "news_entertainment": {
+    "label": "102",
+    "label_desc": "news_entertainment",
+    "label_id": 2
+  },
+  "news_sports": {
+    "label": "103",
+    "label_desc": "news_sports",
+    "label_id": 3
+  },
+  "news_finance": {
+    "label": "104",
+    "label_desc": "news_finance",
+    "label_id": 4
+  },
+  "news_house": {
+    "label": "106",
+    "label_desc": "news_house",
+    "label_id": 5
+  },
+  "news_car": {
+    "label": "107",
+    "label_desc": "news_car",
+    "label_id": 6
+  },
+  "news_edu": {
+    "label": "108",
+    "label_desc": "news_edu",
+    "label_id": 7
+  },
+  "news_tech": {
+    "label": "109",
+    "label_desc": "news_tech",
+    "label_id": 8
+  },
+  "news_military": {
+    "label": "110",
+    "label_desc": "news_military",
+    "label_id": 9
+  },
+  "news_travel": {
+    "label": "112",
+    "label_desc": "news_travel",
+    "label_id": 10
+  },
+  "news_world": {
+    "label": "113",
+    "label_desc": "news_world",
+    "label_id": 11
+  },
+  "news_stock": {
+    "label": "114",
+    "label_desc": "news_stock",
+    "label_id": 12
+  },
+  "news_agriculture": {
+    "label": "115",
+    "label_desc": "news_agriculture",
+    "label_id": 13
+  },
+  "news_game": {
+    "label": "116",
+    "label_desc": "news_game",
+    "label_id": 14
+  }
 }

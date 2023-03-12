@@ -34,7 +34,8 @@ def load_label(file: str):
         tuple: 返回 label2id 和 id2label
     """
     with open(file, "r", encoding="utf-8") as f:
-        label2id: dict = json.load(f)
+        label_dict = json.load(f)
+        label2id: dict = {k: v["label_id"] for k, v in label_dict.items()}
         id2label: dict = dict((v, k) for k, v in label2id.items())
     return label2id, id2label
 
