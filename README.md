@@ -6,4 +6,4 @@
 - config: 配置文件
 - use_: 开头的都是探索型的
 
-使用的是 easytransfer
+使用的是 easytransfer, 这是 tensorflow 1.15 版本的.
