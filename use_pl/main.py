@@ -20,9 +20,10 @@ def main():
     train_file = r"..\data\train.csv"
     dev_file = r"..\data\dev.csv"
     label_file = r"..\data\label.json"
-    bert_path = "bert-base-chinese"
+    # bert_path = "bert-base-chinese"
+    bert_path = r"D:\code\pretrain_model_dir\structbert-large"
     max_length = 64
-    batch_size = 256
+    batch_size = 64
 
     train_dataloader, dev_dataloader, label2id, id2label, tokenizer = load_dataset(
         train_file, dev_file, label_file, bert_path, max_length, batch_size

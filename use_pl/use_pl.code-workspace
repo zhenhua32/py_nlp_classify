@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../data"
+		},
+		{
+			"path": "../use_sklearn"
 		}
 	],
 	"settings": {}
