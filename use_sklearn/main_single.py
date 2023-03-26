@@ -283,9 +283,9 @@ def main_tree():
 
 
 if __name__ == "__main__":
-    # main_linear()
-    # main_bayes()
-    # main_neighbors()
-    # main_nn()
-    # main_svm()
+    main_linear()
+    main_bayes()
+    main_neighbors()
+    main_nn()
+    main_svm()
     main_tree()
