@@ -44,14 +44,14 @@ def get_features(train_df: pd.DataFrame, dev_df: pd.DataFrame, **kwargs):
 
 
 @timeit
-def run_ensemble_model(model, train_features, train_df, dev_features, dev_df):
+def run_ensemble_model(model, train_features, train_labels, dev_features, dev_labels):
     """
     运行模型
     """
-    model.fit(train_features, train_df["label_id"])
+    model.fit(train_features, train_labels)
     pred_labels = model.predict(dev_features)
-    print("f1 score: {:.4f}".format(f1_score(dev_df["label_id"], pred_labels, average="micro")))
-    print("accuracy score: {:.4f}".format(accuracy_score(dev_df["label_id"], pred_labels)))
+    print("f1 score: {:.4f}".format(f1_score(dev_labels, pred_labels, average="micro")))
+    print("accuracy score: {:.4f}".format(accuracy_score(dev_labels, pred_labels)))
 
 
 def main_ensemble():
@@ -61,45 +61,52 @@ def main_ensemble():
     train_df, dev_df, label2id = load_dataset()
     train_features, dev_features = get_features(train_df, dev_df)
 
-    print("使用 AdaBoostClassifier")
-    # TODO: 奇怪, 为什么集成算法更差了?
-    model = AdaBoostClassifier(
-        RidgeClassifier(),
-        n_estimators=10,
-        algorithm="SAMME",
-    )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    # print("使用 AdaBoostClassifier")
+    # # TODO: 奇怪, 为什么集成算法更差了?
+    # model = AdaBoostClassifier(
+    #     RidgeClassifier(),
+    #     n_estimators=10,
+    #     algorithm="SAMME",
+    # )
+    # run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
-    print("使用 BaggingClassifier")
-    model = BaggingClassifier(
-        RidgeClassifier(),
-        n_estimators=10,
-    )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    # print("使用 BaggingClassifier")
+    # model = BaggingClassifier(
+    #     RidgeClassifier(),
+    #     n_estimators=10,
+    # )
+    # run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
-    print("使用 RandomForestClassifier")
-    model = RandomForestClassifier(
-        n_estimators=10,
-    )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    # print("使用 RandomForestClassifier")
+    # model = RandomForestClassifier(
+    #     n_estimators=10,
+    # )
+    # run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
-    print("使用 ExtraTreesClassifier")
-    model = ExtraTreesClassifier(
-        n_estimators=10,
-    )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    # print("使用 ExtraTreesClassifier")
+    # model = ExtraTreesClassifier(
+    #     n_estimators=10,
+    # )
+    # run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
-    print("使用 GradientBoostingClassifier")
-    model = GradientBoostingClassifier(
-        n_estimators=10,
-    )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    # print("使用 GradientBoostingClassifier")
+    # model = GradientBoostingClassifier(
+    #     n_estimators=10,
+    # )
+    # run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
     print("使用 HistGradientBoostingClassifier")
     model = HistGradientBoostingClassifier(
         max_iter=10,
     )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    run_ensemble_model(
+        model,
+        # 有些集成算法不支持稀疏矩阵, 所以这里转换成 numpy array
+        train_features.toarray(),
+        train_df["label_id"],
+        dev_features.toarray(),
+        dev_df["label_id"],
+    )
 
     print("使用 StackingClassifier")
     model = StackingClassifier(
@@ -111,7 +118,7 @@ def main_ensemble():
         ],
         final_estimator=RidgeClassifier(),
     )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
     print("使用 VotingClassifier")
     model = VotingClassifier(
@@ -123,7 +130,7 @@ def main_ensemble():
         ],
         voting="soft",
     )
-    run_ensemble_model(model, train_features, train_df, dev_features, dev_df)
+    run_ensemble_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
 
 if __name__ == "__main__":
