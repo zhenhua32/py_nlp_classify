@@ -21,6 +21,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.neighbors import KNeighborsClassifier, RadiusNeighborsClassifier, NearestCentroid
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import LinearSVC, NuSVC, SVC
+from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier
 
 from tools import timeit, load_dataset
 
@@ -86,6 +87,17 @@ def run_neighbors_model(model, train_features, train_labels, dev_features, dev_l
 def run_nn_model(model, train_features, train_labels, dev_features, dev_labels):
     """
     运行神经网络模型
+    """
+    model.fit(train_features.toarray(), train_labels)
+    pred_labels = model.predict(dev_features.toarray())
+    print("f1 score: {:.4f}".format(f1_score(dev_labels, pred_labels, average="micro")))
+    print("accuracy score: {:.4f}".format(accuracy_score(dev_labels, pred_labels)))
+
+
+@timeit
+def run_tree_model(model, train_features, train_labels, dev_features, dev_labels):
+    """
+    运行树模型
     """
     model.fit(train_features.toarray(), train_labels)
     pred_labels = model.predict(dev_features.toarray())
@@ -227,6 +239,7 @@ def main_nn():
     train_df, dev_df, label2id = load_dataset()
     train_features, dev_features = get_features(train_df, dev_df)
 
+    # TODO: 太慢了, 没跑完
     print("使用模型: MLPClassifier")
     model = MLPClassifier()
     run_nn_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
@@ -243,6 +256,7 @@ def main_svm():
     model = LinearSVC()
     run_svm_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
+    # TODO: 这个也好慢, 没跑完
     print("使用模型: SVC")
     model = SVC()
     run_svm_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
@@ -252,8 +266,26 @@ def main_svm():
     run_svm_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
 
 
+def main_tree():
+    """
+    调用树模型的示例
+    """
+    train_df, dev_df, label2id = load_dataset()
+    train_features, dev_features = get_features(train_df, dev_df)
+
+    print("使用模型: DecisionTreeClassifier")
+    model = DecisionTreeClassifier()
+    run_tree_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
+
+    print("使用模型: ExtraTreeClassifier")
+    model = ExtraTreeClassifier()
+    run_tree_model(model, train_features, train_df["label_id"], dev_features, dev_df["label_id"])
+
+
 if __name__ == "__main__":
     # main_linear()
     # main_bayes()
     # main_neighbors()
-    main_nn()
+    # main_nn()
+    # main_svm()
+    main_tree()
