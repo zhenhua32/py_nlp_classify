@@ -19,6 +19,7 @@ def timeit(func):
         func(*args, **kwargs)
         end = time.time()
         print("time cost: {:.4f}s".format(end - start))
+        print("-" * 50)
 
     return wrapper
 
