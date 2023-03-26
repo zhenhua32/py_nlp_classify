@@ -1,0 +1,11 @@
+{
+    "tfidf__analyzer": "char",
+    "tfidf__lowercase": false,
+    "tfidf__max_df": 0.5,
+    "tfidf__max_features": 30000,
+    "tfidf__ngram_range": [
+        1,
+        2
+    ],
+    "tfidf__norm": "l2"
+}
