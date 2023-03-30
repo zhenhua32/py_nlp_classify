@@ -1,5 +1,6 @@
 """(SNSC) Single Node Single GPU Card Training"""
-from accelerate import Accelerator
+import os
+from accelerate import Accelerator, notebook_launcher
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -10,13 +11,15 @@ from tqdm import tqdm
 BATCH_SIZE = 256
 EPOCHS = 5
 
-# TODO: 没跑成功过
-# 虽然我看文档说是要自己初始化
-# https://github.com/huggingface/accelerate/issues/141
-dist.init_process_group(backend="gloo")
-accelerator = Accelerator()
 
-if __name__ == "__main__":
+def train_ddp():
+    # 原来是要包装成整个函数, 我前面是在 __name__ == "__main__" 里面写的, 会一直卡着
+    # 看文档说是要自己初始化
+    # https://github.com/huggingface/accelerate/issues/141
+    if os.name == "nt":
+        # windows 还是没人权
+        dist.init_process_group(backend="gloo", init_method="tcp://localhost:23456", rank=0, world_size=1)
+    accelerator = Accelerator()
 
     # 1. define network
     net = torchvision.models.resnet18(num_classes=10)
@@ -53,9 +56,7 @@ if __name__ == "__main__":
         nesterov=True,
     )
 
-    net, optimizer, train_loader = accelerator.prepare(
-        net, optimizer, train_loader
-    )
+    net, optimizer, train_loader = accelerator.prepare(net, optimizer, train_loader)
 
     print("            =======  Training  ======= \n")
 
@@ -92,7 +93,15 @@ if __name__ == "__main__":
     print("\n            =======  Training Finished  ======= \n")
 
 
+if __name__ == "__main__":
+    # train_ddp()
+    notebook_launcher(train_ddp, args=(), num_processes=1)
+
+
 """
 accelerate config --config_file accelerate_config.yaml
 accelerate launch --config_file accelerate_config.yaml accelerate_train.py
+
+现在在 windows 上直接运行也可以了
+python accelerate_train.py
 """
