@@ -1,18 +1,27 @@
 """
-训练循环
+训练循环, 分布式训练版本
 """
 
 import os
 import time
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 from prettytable import PrettyTable
-from sklearn.metrics import (accuracy_score, classification_report,
-                             confusion_matrix, f1_score, precision_score,
-                             recall_score)
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -44,7 +53,9 @@ def get_data_loader():
     train_dataset = CustomDataset(train_df, label2id, tokenizer, max_length)
     dev_dataset = CustomDataset(dev_df, label2id, tokenizer, max_length)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    # ddp 里需要使用 DistributedSampler
+    sampler = DistributedSampler(train_dataset)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=0, sampler=sampler)
     dev_loader = DataLoader(dev_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
     return train_loader, dev_loader
@@ -66,7 +77,8 @@ def train(
     total_steps = len(train_loader)
     total_examples = len(train_loader.dataset)
 
-    process_bar = tqdm(enumerate(train_loader), total=total_steps)
+    # ddp: 只在主进程打印日志
+    process_bar = tqdm(enumerate(train_loader), total=total_steps, disable=dist.get_rank() != 0)
     for step, batch in process_bar:
         # 1. 准备数据
         input_ids = batch["input_ids"].to(device)
@@ -81,7 +93,7 @@ def train(
         loss.backward()
         optimizer.step()
         # 4. 记录日志
-        if step % log_interval == 0:
+        if step % log_interval == 0 and dist.get_rank() == 0:
             cur_stats = f"Train Epoch: {epoch} [{step * len(input_ids)}/{total_examples} ({100. * step / total_steps:.0f}%)] Loss: {loss.item():.6f}"
             process_bar.set_description(cur_stats)
             writer.add_scalar("train_loss", loss.item(), epoch * total_steps + step)
@@ -105,7 +117,7 @@ def test(
     all_preds = []
 
     with torch.no_grad():
-        for batch in tqdm(test_loader):
+        for batch in tqdm(test_loader, disable=dist.get_rank() != 0):
             # 1. 准备数据
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
@@ -118,21 +130,22 @@ def test(
             all_labels.extend(labels.tolist())
             all_preds.extend(torch.argmax(logits, dim=1).tolist())
 
-    # 打印下前 10 个预测结果
-    print(all_labels[:10])
-    print(all_preds[:10])
-    test_loss /= total_examples
-    test_accuracy = accuracy_score(all_labels, all_preds)
-    test_recall = recall_score(all_labels, all_preds, average="micro")
-    test_precision = precision_score(all_labels, all_preds, average="micro")
-    test_f1 = f1_score(all_labels, all_preds, average="micro")
-    # 打印下混淆矩阵, 结合 PrettyTable 可以更直观的看到预测结果
-    print("混淆矩阵：")
-    cm = confusion_matrix(all_labels, all_preds)
-    table = PrettyTable([""] + [f"预测{i}" for i in range(num_labels)])
-    for i in range(num_labels):
-        table.add_row([f"实际{i}"] + [j for j in cm[i]])
-    print(table)
+    if dist.get_rank() == 0:
+        # 打印下前 10 个预测结果
+        print(all_labels[:10])
+        print(all_preds[:10])
+        test_loss /= total_examples
+        test_accuracy = accuracy_score(all_labels, all_preds)
+        test_recall = recall_score(all_labels, all_preds, average="micro")
+        test_precision = precision_score(all_labels, all_preds, average="micro")
+        test_f1 = f1_score(all_labels, all_preds, average="micro")
+        # 打印下混淆矩阵, 结合 PrettyTable 可以更直观的看到预测结果
+        print("混淆矩阵：")
+        cm = confusion_matrix(all_labels, all_preds)
+        table = PrettyTable([""] + [f"预测{i}" for i in range(num_labels)])
+        for i in range(num_labels):
+            table.add_row([f"实际{i}"] + [j for j in cm[i]])
+        print(table)
 
     # 打印下分类报告
     print("分类报告：")
@@ -147,38 +160,59 @@ def test(
     writer.add_scalar("test_f1", test_f1, epoch)
 
 
-def train_loop():
-    # 1. 初始化
-    # 1.1. 初始化参数
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # 1.2. 初始化模型
+def train_loop(global_rank: int, world_size: int):
+    """
+    改造成 ddp 版本
+    """
+    print("global_rank: %d, world_size: %d" % (global_rank, world_size))
+    # ddp 1. 根据 rank 初始化 device. 并初始化进程组
+    device = torch.device("cuda:%d" % global_rank if torch.cuda.is_available() else "cpu")
+    # 我每次都要给 windows 特殊处理
+    if os.name == "nt":
+        dist.init_process_group(
+            backend="gloo", init_method="tcp://localhost:12345", rank=global_rank, world_size=world_size
+        )
+    else:
+        dist.init_process_group(
+            backend="nccl", init_method="tcp://localhost:12345", rank=global_rank, world_size=world_size
+        )
+
+    # ddp 2. 使用 DDP 包装模型
     model = BertLinear(bert_path, num_labels, load_pretrain=True).to(device)
-    # 1.3. 初始化数据
+    model = DDP(model, device_ids=[global_rank], output_device=global_rank)
+    # ddp 3. 初始化数据, 使用 DistributedSampler
     train_loader, test_loader = get_data_loader()
-    # 1.4. 初始化优化器
+
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
-    # 1.5. 初始化损失函数
     criterion = nn.CrossEntropyLoss()
-    # 1.6. 初始化日志
+
     log_dir = os.path.join(os.getcwd(), "logs")
     if not os.path.exists(log_dir):
         os.mkdir(log_dir)
     log_dir = os.path.join(log_dir, time.strftime("%Y%m%d_%H%M%S", time.localtime()))
     os.mkdir(log_dir)
     writer = SummaryWriter(log_dir=log_dir)
-    # 2. 训练
+
     for epoch in range(1, epochs + 1):
         train(model, device, train_loader, optimizer, criterion, epoch, writer)
         test(model, device, test_loader, criterion, epoch, writer)
-    # 3. 保存模型
-    # model_path = os.path.join(os.getcwd(), "model")
-    # if not os.path.exists(model_path):
-    #     os.mkdir(model_path)
-    # model_path = os.path.join(model_path, "model.pt")
-    # torch.save(model.state_dict(), model_path)
-    # 4. 关闭日志
+
+    # 仅在主进程中保存模型
+    # if global_rank == 0:
+    #     model_path = os.path.join(os.getcwd(), "model")
+    #     if not os.path.exists(model_path):
+    #         os.mkdir(model_path)
+    #     model_path = os.path.join(model_path, "model.pt")
+    #     torch.save(model.state_dict(), model_path)
+
     writer.close()
 
 
 if __name__ == "__main__":
-    train_loop()
+    # ddp: 使用 mp 启动
+    mp.spawn(
+        train_loop,
+        nprocs=torch.cuda.device_count(),
+        args=(torch.cuda.device_count(),),
+        join=True,
+    )
