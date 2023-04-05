@@ -1,16 +1,15 @@
 """
-训练循环, 分布式训练版本
+训练循环
 """
 
 import os
 import time
 
+from accelerate import Accelerator, notebook_launcher
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 from prettytable import PrettyTable
 from sklearn.metrics import (
     accuracy_score,
@@ -21,7 +20,6 @@ from sklearn.metrics import (
     recall_score,
 )
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -53,15 +51,20 @@ def get_data_loader():
     train_dataset = CustomDataset(train_df, label2id, tokenizer, max_length)
     dev_dataset = CustomDataset(dev_df, label2id, tokenizer, max_length)
 
-    # ddp 里需要使用 DistributedSampler
-    sampler = DistributedSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=0, sampler=sampler)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        # pin_memory=True,
+    )
     dev_loader = DataLoader(dev_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
     return train_loader, dev_loader
 
 
 def train(
+    accelerator: Accelerator,
     model: nn.Module,
     device: torch.device,
     train_loader: DataLoader,
@@ -77,8 +80,7 @@ def train(
     total_steps = len(train_loader)
     total_examples = len(train_loader.dataset)
 
-    # ddp: 只在主进程打印日志
-    process_bar = tqdm(enumerate(train_loader), total=total_steps, disable=dist.get_rank() != 0)
+    process_bar = tqdm(enumerate(train_loader), total=total_steps, disable=not accelerator.is_main_process)
     for step, batch in process_bar:
         # 1. 准备数据
         input_ids = batch["input_ids"].to(device)
@@ -90,16 +92,18 @@ def train(
         loss = criterion(logits, labels)
         # 3. 反向传播
         optimizer.zero_grad()
-        loss.backward()
+        # accelerator: 替换反向传播
+        accelerator.backward(loss)
         optimizer.step()
         # 4. 记录日志
-        if step % log_interval == 0 and dist.get_rank() == 0:
+        if step % log_interval == 0 and accelerator.is_main_process:
             cur_stats = f"Train Epoch: {epoch} [{step * len(input_ids)}/{total_examples} ({100. * step / total_steps:.0f}%)] Loss: {loss.item():.6f}"
             process_bar.set_description(cur_stats)
             writer.add_scalar("train_loss", loss.item(), epoch * total_steps + step)
 
 
 def test(
+    accelerator: Accelerator,
     model: nn.Module,
     device: torch.device,
     test_loader: DataLoader,
@@ -117,7 +121,7 @@ def test(
     all_preds = []
 
     with torch.no_grad():
-        for batch in tqdm(test_loader, disable=dist.get_rank() != 0):
+        for batch in tqdm(test_loader, disable=not accelerator.is_main_process):
             # 1. 准备数据
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
@@ -130,7 +134,7 @@ def test(
             all_labels.extend(labels.tolist())
             all_preds.extend(torch.argmax(logits, dim=1).tolist())
 
-    if dist.get_rank() == 0:
+    if accelerator.is_main_process:
         # 打印下前 10 个预测结果
         print(all_labels[:10])
         print(all_preds[:10])
@@ -147,44 +151,41 @@ def test(
             table.add_row([f"实际{i}"] + [j for j in cm[i]])
         print(table)
 
-    # 打印下分类报告
-    print("分类报告：")
-    print(classification_report(all_labels, all_preds))
+        # 打印下分类报告
+        print("分类报告：")
+        print(classification_report(all_labels, all_preds))
 
-    cur_stats = f"Test set: Average loss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}, Recall: {test_recall:.4f}, Precision: {test_precision:.4f}, F1: {test_f1:.4f}"
-    tqdm.write(cur_stats)
-    writer.add_scalar("test_loss", test_loss, epoch)
-    writer.add_scalar("test_accuracy", test_accuracy, epoch)
-    writer.add_scalar("test_recall", test_recall, epoch)
-    writer.add_scalar("test_precision", test_precision, epoch)
-    writer.add_scalar("test_f1", test_f1, epoch)
+        cur_stats = f"Test set: Average loss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}, Recall: {test_recall:.4f}, Precision: {test_precision:.4f}, F1: {test_f1:.4f}"
+        tqdm.write(cur_stats)
+        writer.add_scalar("test_loss", test_loss, epoch)
+        writer.add_scalar("test_accuracy", test_accuracy, epoch)
+        writer.add_scalar("test_recall", test_recall, epoch)
+        writer.add_scalar("test_precision", test_precision, epoch)
+        writer.add_scalar("test_f1", test_f1, epoch)
 
 
-def train_loop(global_rank: int, world_size: int):
-    """
-    改造成 ddp 版本
-    """
-    print("global_rank: %d, world_size: %d" % (global_rank, world_size))
-    # ddp 1. 根据 rank 初始化 device. 并初始化进程组
-    device = torch.device("cuda:%d" % global_rank if torch.cuda.is_available() else "cpu")
-    # 我每次都要给 windows 特殊处理
+def train_loop():
+    torch.backends.cuda.matmul.allow_tf32 = True
     if os.name == "nt":
-        dist.init_process_group(
-            backend="gloo", init_method="tcp://localhost:12345", rank=global_rank, world_size=world_size
-        )
-    else:
-        dist.init_process_group(
-            backend="nccl", init_method="tcp://localhost:12345", rank=global_rank, world_size=world_size
-        )
+        # windows 需要提前初始化, 主要是要设置 backend
+        dist.init_process_group(backend="gloo", init_method="tcp://localhost:12345", rank=0, world_size=1)
+    # accelerator: 初始化实例
+    accelerator = Accelerator(
+        mixed_precision="fp16",
+    )
+    # accelerator: 将 device 替换成 accelerator.device. 另一种选择是移除所有的 to(device) 或者 cuda 操作
+    device = accelerator.device
 
-    # ddp 2. 使用 DDP 包装模型
     model = BertLinear(bert_path, num_labels, load_pretrain=True).to(device)
-    model = DDP(model, device_ids=[global_rank], output_device=global_rank)
-    # ddp 3. 初始化数据, 使用 DistributedSampler
+    # linux 上可以用, 没试过
+    if os.name != "nt":
+        model = torch.compile(model)
     train_loader, test_loader = get_data_loader()
-
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss()
+
+    # accelerator: 通过 prepare() 方法转换下
+    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
     log_dir = os.path.join(os.getcwd(), "logs")
     if not os.path.exists(log_dir):
@@ -194,28 +195,20 @@ def train_loop(global_rank: int, world_size: int):
     writer = SummaryWriter(log_dir=log_dir)
 
     for epoch in range(1, epochs + 1):
-        train(model, device, train_loader, optimizer, criterion, epoch, writer)
-        # 只在主进程中评估模型
-        if global_rank == 0:
-            test(model, device, test_loader, criterion, epoch, writer)
-        dist.barrier()
+        # accelerator: 替换反向传播
+        train(accelerator, model, device, train_loader, optimizer, criterion, epoch, writer)
+        if accelerator.is_main_process:
+            test(accelerator, model, device, test_loader, criterion, epoch, writer)
+        accelerator.wait_for_everyone()
 
-    # 仅在主进程中保存模型
-    # if global_rank == 0:
-    #     model_path = os.path.join(os.getcwd(), "model")
-    #     if not os.path.exists(model_path):
-    #         os.mkdir(model_path)
-    #     model_path = os.path.join(model_path, "model.pt")
-    #     torch.save(model.state_dict(), model_path)
+    # model_path = os.path.join(os.getcwd(), "model")
+    # if not os.path.exists(model_path):
+    #     os.mkdir(model_path)
+    # model_path = os.path.join(model_path, "model.pt")
+    # torch.save(model.state_dict(), model_path)
 
     writer.close()
 
 
 if __name__ == "__main__":
-    # ddp: 使用 mp 启动
-    mp.spawn(
-        train_loop,
-        nprocs=torch.cuda.device_count(),
-        args=(torch.cuda.device_count(),),
-        join=True,
-    )
+    notebook_launcher(train_loop, args=(), num_processes=1)
