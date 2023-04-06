@@ -60,7 +60,7 @@ def get_data_loader():
     )
     dev_loader = DataLoader(dev_dataset, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
-    return train_loader, dev_loader
+    return train_loader, dev_loader, label2id, id2label
 
 
 def train(
@@ -110,6 +110,7 @@ def test(
     criterion: nn.Module,
     epoch: int,
     writer: SummaryWriter,
+    label2id: dict,
 ):
     """
     评估模型
@@ -144,16 +145,16 @@ def test(
         test_precision = precision_score(all_labels, all_preds, average="micro")
         test_f1 = f1_score(all_labels, all_preds, average="micro")
         # 打印下混淆矩阵, 结合 PrettyTable 可以更直观的看到预测结果
-        print("混淆矩阵：")
-        cm = confusion_matrix(all_labels, all_preds)
-        table = PrettyTable([""] + [f"预测{i}" for i in range(num_labels)])
-        for i in range(num_labels):
-            table.add_row([f"实际{i}"] + [j for j in cm[i]])
+        print("混淆矩阵：按行看, 实际类别, 按列看, 预测类别")
+        cm = confusion_matrix(all_labels, all_preds, labels=list(label2id.values()))
+        table = PrettyTable([""] + [f"{label}" for label in label2id.keys()])
+        for i, label in enumerate(label2id.keys()):
+            table.add_row([f"{label}"] + [j for j in cm[i]])
         print(table)
 
         # 打印下分类报告
         print("分类报告：")
-        print(classification_report(all_labels, all_preds))
+        print(classification_report(all_labels, all_preds, target_names=list(label2id.keys())))
 
         cur_stats = f"Test set: Average loss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}, Recall: {test_recall:.4f}, Precision: {test_precision:.4f}, F1: {test_f1:.4f}"
         tqdm.write(cur_stats)
@@ -180,7 +181,7 @@ def train_loop():
     # linux 上可以用, 没试过
     if os.name != "nt":
         model = torch.compile(model)
-    train_loader, test_loader = get_data_loader()
+    train_loader, test_loader, label2id, id2label = get_data_loader()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss()
 
@@ -198,7 +199,7 @@ def train_loop():
         # accelerator: 替换反向传播
         train(accelerator, model, device, train_loader, optimizer, criterion, epoch, writer)
         if accelerator.is_main_process:
-            test(accelerator, model, device, test_loader, criterion, epoch, writer)
+            test(accelerator, model, device, test_loader, criterion, epoch, writer, label2id)
         accelerator.wait_for_everyone()
 
     # model_path = os.path.join(os.getcwd(), "model")
