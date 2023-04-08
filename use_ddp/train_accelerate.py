@@ -198,8 +198,9 @@ def train_loop():
     for epoch in range(1, epochs + 1):
         # accelerator: 替换反向传播
         train(accelerator, model, device, train_loader, optimizer, criterion, epoch, writer)
-        if accelerator.is_main_process:
-            test(accelerator, model, device, test_loader, criterion, epoch, writer, label2id)
+        # 多卡错误的原因似乎在这里, 不能用 if 判断, 直接让每张卡都跑一遍评估好了
+        # if accelerator.is_main_process:
+        test(accelerator, model, device, test_loader, criterion, epoch, writer, label2id)
         accelerator.wait_for_everyone()
 
     # model_path = os.path.join(os.getcwd(), "model")
