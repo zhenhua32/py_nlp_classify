@@ -99,7 +99,7 @@ training_args = TrainingArguments(
     learning_rate=2e-5,
     per_device_train_batch_size=128,
     per_device_eval_batch_size=128,
-    num_train_epochs=2,
+    num_train_epochs=1,
     weight_decay=0.01,
     evaluation_strategy="epoch",
     save_strategy="epoch",
@@ -121,6 +121,10 @@ trainer = Trainer(
 # 开始训练
 trainer.train()
 # 评估
-trainer.evaluate()
+eval_result = trainer.evaluate()
+print("评估结果:", eval_result)
 # 保存模型
-trainer.save_model("my_model")
+trainer.save_model()
+tokenizer.save_pretrained(training_args.output_dir)
+trainer.save_metrics("all", eval_result)
+breakpoint()
