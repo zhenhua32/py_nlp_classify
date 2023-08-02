@@ -1,36 +1,15 @@
 """
 使用 transformers 进行文本分类, 使用 pytorch 模型
 """
+import os
 
 import numpy as np
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
+import evaluate
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments
+from transformers import DataCollatorWithPadding
 
-# 定义模型
-pretrain_model_name = "bert-base-chinese"
-model = AutoModelForSequenceClassification.from_pretrained(pretrain_model_name, num_labels=15)
-
-# 定义分词器
-tokenizer = AutoTokenizer.from_pretrained(pretrain_model_name)
-
-# 从本地加载数据
-# 标签名要命名为 labels
-raw_dataset = load_dataset(
-    "csv",
-    data_files={"train": "../data/train.csv", "dev": "../data/dev.csv"},
-    delimiter="\t",
-    column_names=["str_label", "text"],
-)
-
-
-def tokenize_function(examples):
-    return tokenizer(examples["text"], padding="max_length", truncation=True)
-
-
-# 分词
-tokenized_datasets = raw_dataset.map(tokenize_function, batched=True)
-
-# 同样的, 将文本标签转换成整数
+# 定义标签映射
 label_map = {
     "agriculture": 0,
     "house": 1,
@@ -48,31 +27,86 @@ label_map = {
     "world": 13,
     "tech": 14,
 }
+id2label = {v: k for k, v in label_map.items()}
+
+# 定义模型
+pretrain_model_name = "bert-base-chinese"
+# 定义分词器
+tokenizer = AutoTokenizer.from_pretrained(pretrain_model_name)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+# 从本地加载数据
+# 标签名要命名为 labels
+raw_dataset = load_dataset(
+    "csv",
+    data_files={"train": "../data/train.csv", "dev": "../data/dev.csv"},
+    delimiter="\t",
+    column_names=["str_label", "text"],
+)
+
+
+def tokenize_function(examples):
+    # 不用在这里使用 padding="max_length", 因为后面会使用 DataCollatorWithPadding
+    return tokenizer(examples["text"], truncation=True, max_length=64)
+
+
+# 分词
+tokenized_datasets = raw_dataset.map(tokenize_function, batched=True)
 
 
 def label_function(ex):
-    ex["labels"] = label_map[ex["str_label"]]
+    # 每个标签都有 news_ 开头, 需要去掉
+    ex["labels"] = label_map[ex["str_label"].replace("news_", "")]
     return ex
 
 
 tokenized_datasets = tokenized_datasets.map(label_function, batched=False)
-
 train_dataset = tokenized_datasets["train"].shuffle(seed=42)
-dev_dataset = tokenized_datasets["dev"].shuffle(seed=42)
+dev_dataset = tokenized_datasets["dev"]
+# 查看下第一个数据
+print("数据集中第一个数据:")
+print(train_dataset[0])
 
 
 # 加载评估器
-metric = load_metric("accuracy")
+metric = evaluate.load("f1")
+# 坑爹, 不能用组合方式, 因为 f1 的时候需要传入 average 参数, 但在 compute 中传入无效
+# metric = evaluate.combine(["accuracy", "f1", "precision", "recall"])
 
 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
-    return metric.compute(predictions=predictions, references=labels)
+
+    # 尴尬, 只能分开计算
+    result = {}
+    result["f1_micro"] = metric.compute(predictions=predictions, references=labels, average="micro")["f1"]
+    result["f1_macro"] = metric.compute(predictions=predictions, references=labels, average="macro")["f1"]
+
+    return result
 
 
 # 定义训练参数
-training_args = TrainingArguments("test_trainer_pt", evaluation_strategy="epoch", report_to="none", save_total_limit=2,)
+model = AutoModelForSequenceClassification.from_pretrained(
+    pretrain_model_name,
+    num_labels=15,
+    id2label=id2label,
+    label2id=label_map,
+)
+
+training_args = TrainingArguments(
+    "tnews_{}".format(os.path.basename(pretrain_model_name)),
+    learning_rate=2e-5,
+    per_device_train_batch_size=128,
+    per_device_eval_batch_size=128,
+    num_train_epochs=2,
+    weight_decay=0.01,
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    report_to="none",
+    save_total_limit=1,
+)
 
 # 定义训练器
 trainer = Trainer(
@@ -80,6 +114,7 @@ trainer = Trainer(
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=dev_dataset,
+    data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
 
